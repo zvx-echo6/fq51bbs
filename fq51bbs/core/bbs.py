@@ -39,6 +39,7 @@ class FQ51BBS:
         self.config = config
         self.running = False
         self.start_time: float = 0
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Core components
         self.crypto = CryptoManager(
@@ -154,6 +155,8 @@ class FQ51BBS:
 
     async def _main_loop(self):
         """Main async event loop."""
+        # Store event loop reference for thread-safe callbacks
+        self._loop = asyncio.get_running_loop()
         logger.info(f"{self.config.bbs.name} is now running")
 
         # Send startup announcement if configured
@@ -253,8 +256,12 @@ class FQ51BBS:
         # Dispatch command
         try:
             response = self.dispatcher.dispatch(text, sender, channel)
-            if response:
-                asyncio.create_task(self._send_response(sender, response))
+            if response and self._loop:
+                # Schedule async send on the main event loop (thread-safe)
+                asyncio.run_coroutine_threadsafe(
+                    self._send_response(sender, response),
+                    self._loop
+                )
         except Exception as e:
             logger.error(f"Error handling message from {sender}: {e}")
 
