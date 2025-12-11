@@ -31,7 +31,7 @@ setup(
     python_requires=">=3.9",
     install_requires=[
         "meshtastic>=2.3.0",
-        "pubsub>=4.0.3",
+        "pypubsub>=4.0.3",
         "argon2-cffi>=23.1.0",
         "cryptography>=41.0.0",
         "tomli>=2.0.0;python_version<'3.11'",

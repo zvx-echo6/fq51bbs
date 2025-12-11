@@ -61,6 +61,8 @@ class FQ51BBS:
         self.mesh = None
         self.dispatcher = None
         self.sync_manager = None
+        self.mail_service = None
+        self.board_service = None
 
         # Session tracking
         self._sessions: dict = {}  # node_id -> session info
@@ -90,6 +92,18 @@ class FQ51BBS:
         # Initialize Meshtastic interface
         from ..mesh.interface import MeshInterface
         self.mesh = MeshInterface(self.config.meshtastic)
+
+        # Initialize mail service
+        if self.config.features.mail_enabled:
+            from .mail import MailService
+            self.mail_service = MailService(self)
+            logger.info("Mail service initialized")
+
+        # Initialize board service
+        if self.config.features.boards_enabled:
+            from .boards import BoardService
+            self.board_service = BoardService(self)
+            logger.info("Board service initialized")
 
         # Initialize command dispatcher
         from ..commands.dispatcher import CommandDispatcher
@@ -190,8 +204,8 @@ class FQ51BBS:
 
     async def _process_mail_queue(self):
         """Process pending mail deliveries."""
-        # TODO: Implement mail queue processing
-        pass
+        if self.mail_service:
+            await self.mail_service._process_pending_deliveries()
 
     async def _announce(self):
         """Send BBS announcement to mesh."""

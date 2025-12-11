@@ -412,51 +412,237 @@ class CommandDispatcher:
 
         return "Your nodes: " + ", ".join(nodes)
 
-    # Stub implementations for remaining commands
+    # === Mail Commands ===
+
     def cmd_send_mail(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """Send mail."""
-        # TODO: Implement
-        return "Mail system not yet implemented."
+        """Send mail: SM <to> <message>"""
+        parts = args.split(maxsplit=1)
+        if len(parts) < 2:
+            return "Usage: SM <username> <message>"
+
+        recipient, body = parts
+
+        if len(body) > 1000:
+            return "Message too long (max 1000 chars)."
+
+        message, error = self.bbs.mail_service.compose_mail(
+            sender_user_id=session["user_id"],
+            sender_node_id=sender,
+            recipient_username=recipient,
+            body=body
+        )
+
+        if error:
+            return error
+
+        return f"Mail sent to {recipient}."
 
     def cmd_check_mail(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """Check mail count."""
-        from ..db.messages import MessageRepository
-        msg_repo = MessageRepository(self.bbs.db)
-        unread = msg_repo.count_unread_mail(session["user_id"])
-        return f"You have {unread} unread message(s)."
+        """Check mail count and list recent."""
+        summary = self.bbs.mail_service.get_inbox_summary(session["user_id"])
+        messages = self.bbs.mail_service.list_mail(session["user_id"], limit=5)
+
+        if summary["total"] == 0:
+            return "Your inbox is empty."
+
+        lines = [f"Mail: {summary['unread']} unread / {summary['total']} total"]
+
+        if messages:
+            lines.append("")
+            for msg in messages:
+                marker = "*" if msg["new"] else " "
+                lines.append(f"{marker}{msg['id']:3d}. {msg['date']} {msg['from'][:12]}")
+
+        lines.append("")
+        lines.append("Use RM <n> to read, DM <n> to delete")
+
+        return "\n".join(lines)
 
     def cmd_read_mail(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """Read mail."""
-        # TODO: Implement
-        return "Mail system not yet implemented."
+        """Read mail: RM <n> or RM to list"""
+        if not args:
+            # List mail
+            messages = self.bbs.mail_service.list_mail(session["user_id"], limit=10)
+
+            if not messages:
+                return "Your inbox is empty."
+
+            lines = ["=== Inbox ===", ""]
+            for msg in messages:
+                marker = "*" if msg["new"] else " "
+                lines.append(f"{marker}{msg['id']:3d}. {msg['date']} {msg['from'][:12]}")
+
+            return "\n".join(lines)
+
+        try:
+            message_id = int(args)
+        except ValueError:
+            return "Usage: RM <message_id>"
+
+        mail, error = self.bbs.mail_service.read_mail(session["user_id"], message_id)
+        if error:
+            return error
+
+        lines = [
+            f"=== Mail #{mail['id']} ===",
+            f"From: {mail['from']}",
+            f"Date: {mail['date']}",
+            f"Subject: {mail['subject']}",
+            "",
+            mail['body']
+        ]
+
+        return "\n".join(lines)
 
     def cmd_delete_mail(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """Delete mail."""
-        # TODO: Implement
-        return "Mail system not yet implemented."
+        """Delete mail: DM <n>"""
+        if not args:
+            return "Usage: DM <message_id>"
+
+        try:
+            message_id = int(args)
+        except ValueError:
+            return "Usage: DM <message_id>"
+
+        success, error = self.bbs.mail_service.delete_mail(session["user_id"], message_id)
+        if error:
+            return error
+
+        return f"Message #{message_id} deleted."
+
+    # === Board Commands ===
 
     def cmd_boards(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """List or enter boards."""
-        # TODO: Implement
-        return "Board system not yet implemented."
+        """List boards or enter: B [name]"""
+        if not args:
+            # List boards
+            boards = self.bbs.board_service.list_boards(session.get("user_id"))
+
+            if not boards:
+                return "No boards available."
+
+            lines = ["=== Boards ===", ""]
+            for board in boards:
+                unread_marker = f"({board['unread']} new)" if board['unread'] > 0 else ""
+                restricted = "[R]" if board['restricted'] else ""
+                lines.append(f"  {board['name']:<12} {board['posts']:3d} posts {unread_marker} {restricted}")
+
+            lines.append("")
+            lines.append("Use B <name> to enter a board")
+
+            return "\n".join(lines)
+
+        # Enter board
+        board, error = self.bbs.board_service.enter_board(args, session.get("user_id"))
+        if error:
+            return error
+
+        session["current_board"] = board.id
+
+        # Get post count
+        from ..db.messages import MessageRepository
+        msg_repo = MessageRepository(self.bbs.db)
+        post_count = msg_repo.count_board_messages(board.id)
+
+        lines = [
+            f"=== {board.name.upper()} ===",
+            board.description or "",
+            f"{post_count} posts",
+            "",
+            "L - list posts, R <n> - read, P <subj> <body> - post, Q - quit"
+        ]
+
+        return "\n".join(lines)
 
     def cmd_list(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """List posts."""
-        # TODO: Implement
-        return "Board system not yet implemented."
+        """List posts: L [count]"""
+        if not session.get("current_board"):
+            return "Enter a board first with B <name>"
+
+        limit = 10
+        if args:
+            try:
+                limit = min(int(args), 50)
+            except ValueError:
+                pass
+
+        posts = self.bbs.board_service.list_posts(
+            session["current_board"],
+            session.get("user_id"),
+            limit=limit
+        )
+
+        if not posts:
+            return "No posts on this board."
+
+        lines = ["#    Date   Author       Subject", "-" * 40]
+        for post in posts:
+            lines.append(f"{post.number:3d}. {post.date} {post.author[:12]:<12} {post.subject}")
+
+        return "\n".join(lines)
 
     def cmd_read(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """Read post."""
-        # TODO: Implement
-        return "Board system not yet implemented."
+        """Read post: R <n>"""
+        if not session.get("current_board"):
+            return "Enter a board first with B <name>"
+
+        if not args:
+            return "Usage: R <post_number>"
+
+        try:
+            post_number = int(args)
+        except ValueError:
+            return "Usage: R <post_number>"
+
+        post, error = self.bbs.board_service.read_post(
+            session["current_board"],
+            post_number,
+            session.get("user_id")
+        )
+
+        if error:
+            return error
+
+        lines = [
+            f"=== {post.board}#{post.number} ===",
+            f"Subject: {post.subject}",
+            f"From: {post.author}",
+            f"Date: {post.date}",
+            "",
+            post.body
+        ]
+
+        return "\n".join(lines)
 
     def cmd_post(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """Post to board."""
-        # TODO: Implement
-        return "Board system not yet implemented."
+        """Post to board: P <subject> <body>"""
+        if not session.get("current_board"):
+            return "Enter a board first with B <name>"
+
+        parts = args.split(maxsplit=1)
+        if len(parts) < 2:
+            return "Usage: P <subject> <body>"
+
+        subject, body = parts
+
+        message, error = self.bbs.board_service.create_post(
+            board_id=session["current_board"],
+            user_id=session["user_id"],
+            sender_node_id=sender,
+            subject=subject,
+            body=body
+        )
+
+        if error:
+            return error
+
+        return "Post created successfully."
 
     def cmd_quit_board(self, sender: str, args: str, session: dict, channel: int) -> str:
         """Quit current board."""
+        if not session.get("current_board"):
+            return "Not currently in a board."
+
         session["current_board"] = None
         return "Exited board."
 
