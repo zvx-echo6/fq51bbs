@@ -91,6 +91,10 @@ class MaintenanceManager:
 
     async def _check_announcements(self, now: float):
         """Check and send periodic announcements."""
+        # Check if announcements are enabled
+        if not self.config.bbs.announcements_enabled:
+            return
+
         interval_hours = self.config.bbs.announcement_interval_hours
         if interval_hours <= 0:
             return

@@ -160,7 +160,7 @@ class FQ51BBS:
         logger.info(f"{self.config.bbs.name} is now running")
 
         # Send startup announcement if configured
-        if self.config.bbs.announcement_interval_hours > 0:
+        if self.config.bbs.announcements_enabled and self.config.bbs.announcement_interval_hours > 0:
             await self._announce()
 
         # Main loop
@@ -237,11 +237,33 @@ class FQ51BBS:
         sender = packet.get("fromId", "")
         text = packet.get("text", "")
         channel = packet.get("channel", 0)
+        # Check if this is a DM (toId is our node, not broadcast)
+        to_id = packet.get("toId", "")
+        is_dm = to_id == self.mesh.node_id
 
         if not text or not sender:
             return
 
         self.stats.messages_received += 1
+
+        # Channel filtering
+        mesh_config = self.config.meshtastic
+
+        # If dm_only is set, ignore non-DM messages
+        if mesh_config.dm_only and not is_dm:
+            logger.debug(f"Ignoring non-DM from {sender} on channel {channel}")
+            return
+
+        # Check if channel is in ignore list
+        if channel in mesh_config.ignore_channels:
+            logger.debug(f"Ignoring message on ignored channel {channel}")
+            return
+
+        # If respond_channel is set (not -1), only respond on that channel or DMs
+        if mesh_config.respond_channel >= 0:
+            if not is_dm and channel != mesh_config.respond_channel:
+                logger.debug(f"Ignoring message on channel {channel} (respond_channel={mesh_config.respond_channel})")
+                return
 
         # Rate limiting
         if not self.rate_limiter.check(sender, "command"):

@@ -28,6 +28,7 @@ class BBSConfig:
     motd: str = "Welcome to FQ51BBS!"
     max_message_age_days: int = 30
     announcement_interval_hours: int = 12
+    announcements_enabled: bool = True  # Enable/disable periodic announcements
 
 
 @dataclass
@@ -45,8 +46,11 @@ class MeshtasticConfig:
     serial_port: str = "/dev/ttyUSB0"
     tcp_host: str = "localhost"
     tcp_port: int = 4403
-    channel_index: int = 0
-    public_channel: int = 0
+    # Channel settings
+    public_channel: int = 0  # Default public channel (e.g., LongFast)
+    respond_channel: int = -1  # Channel to respond on (-1 = DM only, 0+ = specific channel)
+    ignore_channels: list[int] = field(default_factory=list)  # Channels to ignore
+    dm_only: bool = True  # Only respond to direct messages (not channel broadcasts)
 
 
 @dataclass
