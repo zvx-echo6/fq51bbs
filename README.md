@@ -21,26 +21,26 @@ git clone https://forge.echo6.co/fq51bbs/fq51bbs.git
 cd fq51bbs
 
 # First run - interactive setup wizard
-docker-compose up
+docker compose run --rm fq51bbs config --wizard
 
-# After setup completes, run in background
-docker-compose up -d
+# After setup, run the BBS
+docker compose up -d
 
 # View logs
-docker-compose logs -f
+docker compose logs -f
 ```
 
-The first run launches an interactive setup wizard to configure your BBS.
-Configuration is stored in the Docker volume and persists across restarts.
+The setup wizard walks you through initial configuration.
+Config is stored in the Docker volume and persists across restarts.
 
 ### Raspberry Pi
 
 ```bash
-# On RPi Zero 2 W - first run for setup
-docker-compose -f docker-compose.rpi.yml up
+# On RPi Zero 2 W - first run setup wizard
+docker compose -f docker-compose.rpi.yml run --rm fq51bbs config --wizard
 
 # Then run in background
-docker-compose -f docker-compose.rpi.yml up -d
+docker compose -f docker-compose.rpi.yml up -d
 ```
 
 ### Manual Installation

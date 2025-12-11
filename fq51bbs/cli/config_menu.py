@@ -101,10 +101,15 @@ class ConfigMenu:
 
     def prompt(self, message: str, default: str = "") -> str:
         """Get user input with optional default."""
+        import sys
         if default:
-            result = input(f"{message} [{default}]: ").strip()
+            sys.stdout.write(f"{message} [{default}]: ")
+            sys.stdout.flush()
+            result = sys.stdin.readline().strip()
             return result if result else default
-        return input(f"{message}: ").strip()
+        sys.stdout.write(f"{message}: ")
+        sys.stdout.flush()
+        return sys.stdin.readline().strip()
 
     def confirm(self, message: str) -> bool:
         """Get yes/no confirmation."""

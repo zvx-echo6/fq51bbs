@@ -1,10 +1,9 @@
 # FQ51BBS Docker Compose Configuration
 #
 # Usage:
-#   docker-compose up        # First run launches setup wizard
-#   docker-compose up -d     # Run in background (after initial setup)
+#   docker compose run --rm fq51bbs config --wizard  # First-time setup
+#   docker compose up -d                              # Run BBS in background
 #
-# First-time setup runs interactively - follow the prompts to configure.
 # Config is stored in the fq51bbs_data volume at /data/config.toml
 #
 # For serial connection (USB), uncomment the devices section below
