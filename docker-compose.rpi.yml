@@ -8,8 +8,6 @@
 # Usage:
 #   docker-compose -f docker-compose.rpi.yml up -d
 
-version: "3.8"
-
 services:
   fq51bbs:
     build:

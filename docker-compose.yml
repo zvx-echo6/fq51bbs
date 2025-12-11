@@ -8,8 +8,6 @@
 # For serial connection (USB), add device mapping in service definition
 # For TCP connection, ensure Meshtastic device is accessible on network
 
-version: "3.8"
-
 services:
   fq51bbs:
     build:

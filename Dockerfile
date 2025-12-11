@@ -54,6 +54,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY --chown=fq51bbs:fq51bbs fq51bbs/ /app/fq51bbs/
 COPY --chown=fq51bbs:fq51bbs config.example.toml /app/
+COPY --chown=fq51bbs:fq51bbs docker-entrypoint.sh /app/
 
 # Switch to non-root user
 USER fq51bbs
@@ -65,6 +66,6 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD python -c "import sqlite3; sqlite3.connect('/data/fq51bbs.db').execute('SELECT 1')" || exit 1
 
-# Default command
-ENTRYPOINT ["python", "-m", "fq51bbs"]
+# Entrypoint handles config validation
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["--config", "/app/config.toml"]

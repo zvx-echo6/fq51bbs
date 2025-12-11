@@ -53,6 +53,7 @@ RUN pip install --no-cache-dir --no-compile -r requirements.txt && \
 # Copy application code
 COPY --chown=fq51bbs:fq51bbs fq51bbs/ /app/fq51bbs/
 COPY --chown=fq51bbs:fq51bbs config.example.toml /app/
+COPY --chown=fq51bbs:fq51bbs docker-entrypoint.sh /app/
 
 # Remove unnecessary files
 RUN find /app -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true && \
@@ -66,5 +67,6 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=60s --timeout=15s --start-period=30s --retries=2 \
     CMD python -c "import sqlite3; sqlite3.connect('/data/fq51bbs.db').execute('SELECT 1')" || exit 1
 
-ENTRYPOINT ["python", "-m", "fq51bbs"]
+# Entrypoint handles config validation
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["--config", "/app/config.toml"]
