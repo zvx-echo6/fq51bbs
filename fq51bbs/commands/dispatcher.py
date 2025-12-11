@@ -174,24 +174,20 @@ class CommandDispatcher:
     # === Command Handlers ===
 
     def cmd_help(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """Show help information."""
-        lines = [
-            f"=== {self.bbs.config.bbs.name} Help ===",
-            "",
-            "Commands:",
-        ]
-
-        # Group commands by access level
-        for cmd, (_, access, help_text) in sorted(self._commands.items()):
-            if access == "admin" and not session.get("is_admin"):
-                continue
-            if len(cmd) <= 2:  # Only show short commands
-                lines.append(f"  {cmd}: {help_text}")
-
-        lines.append("")
-        lines.append("Send ? <cmd> for detailed help")
-
-        return "\n".join(lines)
+        """Show help information - compact for Meshtastic's 237 byte limit."""
+        # Compact help to fit in single message
+        return (
+            f"[{self.bbs.config.bbs.callsign}] Cmds:\n"
+            "R user pw-Register\n"
+            "L user pw-Login\n"
+            "SM user msg-Send mail\n"
+            "RM-Read mail\n"
+            "LB-List boards\n"
+            "RB board-Read board\n"
+            "PB board msg-Post\n"
+            "W-Who's on\n"
+            "I-Info O-Logout"
+        )
 
     def cmd_info(self, sender: str, args: str, session: dict, channel: int) -> str:
         """Show BBS information."""
