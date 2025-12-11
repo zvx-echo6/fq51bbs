@@ -2,20 +2,13 @@
 # FQ51BBS Docker Entrypoint
 # Runs ttyd for web config access and the BBS
 
-set -e
-
 export FQ51BBS_CONFIG="/data/config.toml"
 export TERM="${TERM:-xterm-256color}"
 
 # First run - no config exists, create defaults
 if [ ! -f "$FQ51BBS_CONFIG" ]; then
-    echo "Creating default configuration..."
-    fq51-config --wizard < /dev/null || true
-
-    # If still no config (wizard was skipped), create minimal defaults
-    if [ ! -f "$FQ51BBS_CONFIG" ]; then
-        mkdir -p /data
-        cat > "$FQ51BBS_CONFIG" << 'EOF'
+    mkdir -p /data
+    cat > "$FQ51BBS_CONFIG" << 'EOF'
 [bbs]
 name = "FQ51BBS"
 callsign = "FQ51"
@@ -43,18 +36,24 @@ mode = "full"
 [logging]
 level = "INFO"
 EOF
-        echo "Default config created. Access web config at http://localhost:7681"
-    fi
+    echo "Default config created. Configure via http://localhost:7681"
 fi
 
-# Start ttyd in background for web-based config access
+# Start ttyd for web-based config access
 echo "Starting web config interface on port 7681..."
 ttyd -W -p 7681 \
     -t titleFixed="FQ51BBS Config" \
     -t 'theme={"background":"#0d1117","foreground":"#00ff00","cursor":"#00ff00","selectionBackground":"#238636"}' \
     -t fontSize=14 \
-    /bin/bash -c 'while true; do fq51-config; echo "Press Enter to restart config menu..."; read; done' &
+    /bin/bash -c 'while true; do fq51-config; sleep 1; done' &
 
-# Start the BBS
+# Keep ttyd running even if BBS fails
+trap "kill %1 2>/dev/null" EXIT
+
+# Start the BBS in a loop - retry on failure
 echo "Starting FQ51BBS..."
-exec python -m fq51bbs --config "$FQ51BBS_CONFIG" "$@"
+while true; do
+    python -m fq51bbs --config "$FQ51BBS_CONFIG" "$@" || true
+    echo "BBS exited. Check config at http://localhost:7681. Retrying in 10s..."
+    sleep 10
+done
