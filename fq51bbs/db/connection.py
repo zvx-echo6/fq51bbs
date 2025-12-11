@@ -79,6 +79,7 @@ class Database:
         # Run pending migrations
         migrations = [
             ("001_initial", self._migration_001_initial),
+            ("002_settings_and_maintenance", self._migration_002_settings),
         ]
 
         for name, func in migrations:
@@ -285,3 +286,45 @@ class Database:
             (peer_id,)
         )
         return row[0] if row and row[0] else 0
+
+    def _migration_002_settings(self):
+        """Add settings and maintenance support tables."""
+        # First, add columns to existing tables (ignore errors if already exist)
+        alter_statements = [
+            "ALTER TABLE messages ADD COLUMN deleted_at_us INTEGER",
+            "ALTER TABLE bbs_peers ADD COLUMN callsign TEXT",
+            "ALTER TABLE bbs_peers ADD COLUMN name TEXT",
+            "ALTER TABLE bbs_peers ADD COLUMN capabilities TEXT",
+            "ALTER TABLE bbs_peers ADD COLUMN last_seen_us INTEGER",
+        ]
+
+        for stmt in alter_statements:
+            try:
+                self._conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+        # Now create tables and indexes
+        self._conn.executescript("""
+            -- BBS Settings table (key-value store)
+            CREATE TABLE IF NOT EXISTS bbs_settings (
+                key             TEXT PRIMARY KEY,
+                value           TEXT NOT NULL,
+                updated_at_us   INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000000)
+            );
+
+            -- Board read positions table (for tracking reading position)
+            CREATE TABLE IF NOT EXISTS board_read_positions (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                board_id        INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+                last_read_msg_id INTEGER NOT NULL,
+                updated_at_us   INTEGER NOT NULL,
+                UNIQUE(user_id, board_id)
+            );
+
+            -- Add indexes for maintenance queries
+            CREATE INDEX IF NOT EXISTS idx_messages_deleted ON messages(deleted_at_us);
+            CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(msg_type);
+            CREATE INDEX IF NOT EXISTS idx_sync_log_attempt ON sync_log(last_attempt_us);
+        """)

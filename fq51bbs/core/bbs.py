@@ -63,6 +63,7 @@ class FQ51BBS:
         self.sync_manager = None
         self.mail_service = None
         self.board_service = None
+        self.maintenance = None
 
         # Session tracking
         self._sessions: dict = {}  # node_id -> session info
@@ -112,7 +113,12 @@ class FQ51BBS:
         # Initialize sync manager if enabled
         if self.config.sync.enabled:
             from ..sync.manager import SyncManager
-            self.sync_manager = SyncManager(self.config.sync, self.db, self.mesh)
+            self.sync_manager = SyncManager(self.config.sync, self.db, self.mesh, self)
+
+        # Initialize maintenance manager
+        from .maintenance import MaintenanceManager
+        self.maintenance = MaintenanceManager(self)
+        logger.info("Maintenance manager initialized")
 
         logger.info("FQ51BBS setup complete")
 
@@ -183,24 +189,27 @@ class FQ51BBS:
 
     async def _maintenance(self):
         """Periodic maintenance tasks."""
-        # Run every 5 minutes
+        # Run every minute for maintenance tick
         if not hasattr(self, '_last_maintenance'):
             self._last_maintenance = 0
 
         now = time.time()
-        if now - self._last_maintenance < 300:
+        if now - self._last_maintenance < 60:
             return
 
         self._last_maintenance = now
 
-        # Clean up rate limiter buckets
-        self.rate_limiter.cleanup()
+        # Run maintenance manager tick (handles announcements, expiration, backup)
+        if self.maintenance:
+            await self.maintenance.tick()
 
-        # Clean up expired sessions
-        self._cleanup_sessions()
+        # Clean up rate limiter buckets (every 5 minutes)
+        if int(now) % 300 < 60:
+            self.rate_limiter.cleanup()
 
-        # Log stats
-        logger.info(f"Stats: {self.stats}")
+        # Log stats (every 5 minutes)
+        if int(now) % 300 < 60:
+            logger.info(f"Stats: {self.stats}")
 
     async def _process_mail_queue(self):
         """Process pending mail deliveries."""
@@ -208,13 +217,13 @@ class FQ51BBS:
             await self.mail_service._process_pending_deliveries()
 
     async def _announce(self):
-        """Send BBS announcement to mesh."""
-        if not self.mesh.connected:
-            return
-
-        msg = f"[{self.config.bbs.callsign}] {self.config.bbs.name} online. Send H for help."
-        await self.mesh.send_broadcast(msg, self.config.meshtastic.public_channel)
-        logger.info("Sent startup announcement")
+        """Send BBS startup announcement to mesh."""
+        if self.maintenance:
+            await self.maintenance.send_announcement()
+        elif self.mesh and self.mesh.connected:
+            msg = f"[{self.config.bbs.callsign}] {self.config.bbs.name} online. Send H for help."
+            await self.mesh.send_broadcast(msg, self.config.meshtastic.public_channel)
+            logger.info("Sent startup announcement")
 
     def _handle_message(self, packet: dict):
         """
