@@ -154,9 +154,112 @@ class ConfigMenu:
                 handlers[choice]()
 
     def setup_wizard(self):
-        """Run initial setup wizard."""
+        """Run initial setup wizard for first-time configuration."""
         self.clear_screen()
-        print("Setup wizard not yet implemented.")
+
+        print("┌───────────────────────────────────────────────────────────┐")
+        print("│            FQ51BBS Initial Setup Wizard                   │")
+        print("└───────────────────────────────────────────────────────────┘")
+        print()
+        print("Welcome! This wizard will help you configure your BBS.")
+        print("Press Enter to accept defaults shown in [brackets].")
+        print()
+
+        # Step 1: BBS Identity
+        print("─── Step 1: BBS Identity ───")
+        self.config.bbs.name = self.prompt("BBS Name", self.config.bbs.name)
+        self.config.bbs.callsign = self.prompt("Callsign (short identifier)", self.config.bbs.callsign)
+        self.config.bbs.motd = self.prompt("Welcome message (MOTD)", self.config.bbs.motd)
+        print()
+
+        # Step 2: Admin Password
+        print("─── Step 2: Admin Password ───")
+        print("Set a secure admin password for BBS management.")
+        while True:
+            password = self.prompt("Admin password")
+            if not password:
+                print("  Password cannot be empty.")
+                continue
+            if password in ("changeme", "CHANGE_ME", "admin", "password"):
+                print("  Please choose a more secure password.")
+                continue
+            confirm = self.prompt("Confirm password")
+            if password != confirm:
+                print("  Passwords don't match. Try again.")
+                continue
+            self.config.bbs.admin_password = password
+            break
+        print()
+
+        # Step 3: Meshtastic Connection
+        print("─── Step 3: Meshtastic Connection ───")
+        print("How is your Meshtastic device connected?")
+        print("  [1] USB Serial (e.g., /dev/ttyUSB0)")
+        print("  [2] TCP Network (e.g., meshtastic.local:4403)")
+        print("  [3] Skip for now (configure later)")
+
+        conn_choice = self.prompt("Connection type [1-3]", "1")
+
+        if conn_choice == "1":
+            self.config.meshtastic.connection_type = "serial"
+            self.config.meshtastic.serial_port = self.prompt(
+                "Serial port", self.config.meshtastic.serial_port
+            )
+        elif conn_choice == "2":
+            self.config.meshtastic.connection_type = "tcp"
+            self.config.meshtastic.tcp_host = self.prompt(
+                "TCP host", self.config.meshtastic.tcp_host
+            )
+            port_str = self.prompt("TCP port", str(self.config.meshtastic.tcp_port))
+            try:
+                self.config.meshtastic.tcp_port = int(port_str)
+            except ValueError:
+                print("  Invalid port, using default 4403")
+                self.config.meshtastic.tcp_port = 4403
+        print()
+
+        # Step 4: Operating Mode
+        print("─── Step 4: Operating Mode ───")
+        print("Select how this BBS should operate:")
+        print("  [1] Full - Mail and bulletin boards (default)")
+        print("  [2] Mail Only - Private messages only")
+        print("  [3] Boards Only - Public bulletins only")
+        print("  [4] Repeater - Relay messages between nodes")
+
+        mode_choice = self.prompt("Operating mode [1-4]", "1")
+        mode_map = {"1": "full", "2": "mail_only", "3": "boards_only", "4": "repeater"}
+        self.config.operating_mode.mode = mode_map.get(mode_choice, "full")
+        print()
+
+        # Step 5: Features
+        print("─── Step 5: Features ───")
+        reg_input = input("Allow new user registration? [Y/n]: ").strip().lower()
+        self.config.features.registration_enabled = reg_input not in ('n', 'no')
+        self.config.features.sync_enabled = self.confirm("Enable inter-BBS sync?")
+        print()
+
+        # Summary and Save
+        print("─── Configuration Summary ───")
+        print(f"  BBS Name:     {self.config.bbs.name}")
+        print(f"  Callsign:     {self.config.bbs.callsign}")
+        print(f"  Connection:   {self.config.meshtastic.connection_type}")
+        if self.config.meshtastic.connection_type == "serial":
+            print(f"  Serial Port:  {self.config.meshtastic.serial_port}")
+        else:
+            print(f"  TCP Host:     {self.config.meshtastic.tcp_host}:{self.config.meshtastic.tcp_port}")
+        print(f"  Mode:         {self.config.operating_mode.mode}")
+        print(f"  Sync:         {'enabled' if self.config.features.sync_enabled else 'disabled'}")
+        print()
+
+        if self.confirm("Save this configuration?"):
+            self.save_config()
+            print()
+            print("Setup complete! Your BBS is ready to run.")
+            print("Run 'docker-compose up -d' to start in background.")
+        else:
+            print("Configuration not saved. Run the wizard again to reconfigure.")
+
+        print()
         input("Press Enter to continue...")
 
     def bbs_settings(self):
