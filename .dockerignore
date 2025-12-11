@@ -1,0 +1,56 @@
+# Docker ignore file for FQ51BBS
+
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Development files
+.env
+.env.*
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Local config (use config.example.toml as template)
+config.toml
+*.local.toml
+
+# Logs and databases (will be in volumes)
+*.log
+*.db
+*.db-wal
+*.db-shm
+
+# Backup files
+backups/
+*.bak
+
+# Architecture and design docs (not needed in container)
+ARCHITECTURE*.md
+*_concept.md

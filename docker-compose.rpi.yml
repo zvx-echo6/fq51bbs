@@ -1,0 +1,67 @@
+# FQ51BBS Docker Compose for Raspberry Pi Zero 2 W
+#
+# Optimized settings for constrained hardware:
+# - 512MB RAM
+# - Quad-core 1GHz ARM Cortex-A53
+# - SD Card storage
+#
+# Usage:
+#   docker-compose -f docker-compose.rpi.yml up -d
+
+version: "3.8"
+
+services:
+  fq51bbs:
+    build:
+      context: .
+      dockerfile: Dockerfile.rpi
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    image: fq51bbs:rpi
+    container_name: fq51bbs
+    restart: unless-stopped
+
+    # USB serial connection to Meshtastic device
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+
+    # Alternative for different USB devices
+    # devices:
+    #   - /dev/ttyACM0:/dev/ttyACM0
+    #   - /dev/serial0:/dev/serial0
+
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - fq51bbs_data:/data
+
+    # Stricter resource limits for RPi
+    deploy:
+      resources:
+        limits:
+          cpus: "2"           # Use max 2 of 4 cores
+          memory: 100M        # Hard limit 100MB
+        reservations:
+          memory: 50M
+
+    # Reduce logging for SD card longevity
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sqlite3; c=sqlite3.connect('/data/fq51bbs.db'); c.execute('SELECT 1'); c.close()"]
+      interval: 60s         # Less frequent on RPi
+      timeout: 15s
+      retries: 3
+      start_period: 30s     # Longer startup on RPi
+
+volumes:
+  fq51bbs_data:
+    name: fq51bbs_data
+
+networks:
+  default:
+    name: fq51bbs_network

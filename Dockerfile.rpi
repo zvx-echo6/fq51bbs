@@ -1,0 +1,70 @@
+# FQ51BBS Dockerfile for Raspberry Pi
+# Optimized for ARM and constrained resources
+#
+# Build on RPi: docker build -f Dockerfile.rpi -t fq51bbs:rpi .
+# Or cross-build: docker buildx build --platform linux/arm64 -f Dockerfile.rpi -t fq51bbs:rpi .
+
+FROM python:3.11-slim-bookworm
+
+# Labels
+LABEL maintainer="FQ51BBS Project"
+LABEL description="FQ51BBS for Raspberry Pi"
+LABEL version="0.1.0"
+LABEL architecture="arm64"
+
+# Build arguments
+ARG UID=1000
+ARG GID=1000
+
+# Environment - optimized for RPi
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    # Reduce Python memory usage
+    PYTHONMALLOC=malloc \
+    MALLOC_MMAP_THRESHOLD_=131072
+
+# Install minimal system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    udev \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Create non-root user
+RUN groupadd -g ${GID} fq51bbs && \
+    useradd -u ${UID} -g ${GID} -m -s /bin/bash fq51bbs && \
+    usermod -aG dialout fq51bbs
+
+# Create directories
+RUN mkdir -p /app /data /data/backups && \
+    chown -R fq51bbs:fq51bbs /app /data
+
+WORKDIR /app
+
+# Install Python dependencies
+# Using --no-compile to save space
+COPY requirements.txt .
+RUN pip install --no-cache-dir --no-compile -r requirements.txt && \
+    # Clean up pip cache and bytecode
+    find /usr/local -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+# Copy application code
+COPY --chown=fq51bbs:fq51bbs fq51bbs/ /app/fq51bbs/
+COPY --chown=fq51bbs:fq51bbs config.example.toml /app/
+
+# Remove unnecessary files
+RUN find /app -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true && \
+    find /app -name "*.pyc" -delete 2>/dev/null || true
+
+USER fq51bbs
+
+VOLUME ["/data"]
+
+# Simpler health check for RPi
+HEALTHCHECK --interval=60s --timeout=15s --start-period=30s --retries=2 \
+    CMD python -c "import sqlite3; sqlite3.connect('/data/fq51bbs.db').execute('SELECT 1')" || exit 1
+
+ENTRYPOINT ["python", "-m", "fq51bbs"]
+CMD ["--config", "/app/config.toml"]
