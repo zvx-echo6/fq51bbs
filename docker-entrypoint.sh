@@ -53,7 +53,7 @@ trap "kill %1 2>/dev/null" EXIT
 # Start the BBS in a loop - retry on failure
 echo "Starting FQ51BBS..."
 while true; do
-    python -m fq51bbs --config "$FQ51BBS_CONFIG" "$@" || true
+    python -m fq51bbs --config "$FQ51BBS_CONFIG" || true
     echo "BBS exited. Check config at http://localhost:7681. Retrying in 10s..."
     sleep 10
 done

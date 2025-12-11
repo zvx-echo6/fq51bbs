@@ -75,4 +75,4 @@ HEALTHCHECK --interval=60s --timeout=15s --start-period=30s --retries=2 \
 
 # Entrypoint handles config validation
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["--config", "/app/config.toml"]
+# No CMD needed - entrypoint handles config path via FQ51BBS_CONFIG env var
