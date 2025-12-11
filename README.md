@@ -20,14 +20,24 @@ Lightweight BBS for Meshtastic Mesh Networks
 git clone https://forge.echo6.co/fq51bbs/fq51bbs.git
 cd fq51bbs
 
-# First run - interactive setup wizard
-docker compose run --rm fq51bbs config --wizard
+# First run - interactive setup wizard (dialog-based TUI)
+docker compose run --rm fq51bbs fq51-config --wizard
 
 # After setup, run the BBS
 docker compose up -d
 
 # View logs
 docker compose logs -f
+```
+
+### Configuration
+
+```bash
+# Terminal access to config menu
+docker compose run --rm fq51bbs fq51-config
+
+# Or enable web-based config terminal (browse to http://localhost:7681)
+docker compose --profile config up -d
 ```
 
 The setup wizard walks you through initial configuration.

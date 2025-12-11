@@ -33,6 +33,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev \
     # For health checks
     curl \
+    # For dialog-based config tool
+    dialog \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
@@ -55,6 +57,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY --chown=fq51bbs:fq51bbs fq51bbs/ /app/fq51bbs/
 COPY --chown=fq51bbs:fq51bbs config.example.toml /app/
 COPY --chown=fq51bbs:fq51bbs docker-entrypoint.sh /app/
+COPY --chown=fq51bbs:fq51bbs fq51-config /usr/local/bin/fq51-config
 
 # Switch to non-root user
 USER fq51bbs

@@ -4,10 +4,10 @@
 
 set -e
 
-CONFIG_FILE="/data/config.toml"
+export FQ51BBS_CONFIG="/data/config.toml"
 
 # First run - no config exists yet
-if [ ! -f "$CONFIG_FILE" ]; then
+if [ ! -f "$FQ51BBS_CONFIG" ]; then
     echo "┌─────────────────────────────────────────────────────────┐"
     echo "│              FQ51BBS - First Time Setup                 │"
     echo "└─────────────────────────────────────────────────────────┘"
@@ -15,9 +15,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
     echo "No configuration found. Starting setup wizard..."
     echo ""
 
-    # Run the config wizard to create initial config
-    exec python -m fq51bbs --config "$CONFIG_FILE" config --wizard
+    # Run the dialog-based config wizard
+    exec fq51-config --wizard
 fi
 
 # Config exists - start the BBS
-exec python -m fq51bbs --config "$CONFIG_FILE" "$@"
+exec python -m fq51bbs --config "$FQ51BBS_CONFIG" "$@"

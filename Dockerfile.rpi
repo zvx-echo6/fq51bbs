@@ -29,6 +29,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     udev \
     libffi-dev \
+    dialog \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -54,6 +55,7 @@ RUN pip install --no-cache-dir --no-compile -r requirements.txt && \
 COPY --chown=fq51bbs:fq51bbs fq51bbs/ /app/fq51bbs/
 COPY --chown=fq51bbs:fq51bbs config.example.toml /app/
 COPY --chown=fq51bbs:fq51bbs docker-entrypoint.sh /app/
+COPY --chown=fq51bbs:fq51bbs fq51-config /usr/local/bin/fq51-config
 
 # Remove unnecessary files
 RUN find /app -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true && \
