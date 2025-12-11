@@ -49,7 +49,11 @@ fi
 
 # Start ttyd in background for web-based config access
 echo "Starting web config interface on port 7681..."
-ttyd -p 7681 -W fq51-config &
+ttyd -p 7681 \
+    -t titleFixed="FQ51BBS Config" \
+    -t 'theme={"background":"#0d1117","foreground":"#00ff00","cursor":"#00ff00","selectionBackground":"#238636"}' \
+    -t fontSize=14 \
+    /bin/bash -c 'while true; do fq51-config; echo "Press Enter to restart config menu..."; read; done' &
 
 # Start the BBS
 echo "Starting FQ51BBS..."
