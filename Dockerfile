@@ -35,9 +35,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     # For dialog-based config tool
     dialog \
-    # For web-based terminal access
-    ttyd \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    # Install ttyd from GitHub releases
+    && curl -sL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -o /usr/local/bin/ttyd \
+    && chmod +x /usr/local/bin/ttyd
 
 # Create non-root user
 RUN groupadd -g ${GID} fq51bbs && \

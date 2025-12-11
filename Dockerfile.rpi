@@ -30,9 +30,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     udev \
     libffi-dev \
     dialog \
-    ttyd \
+    curl \
     && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    && apt-get clean \
+    # Install ttyd from GitHub releases (ARM64)
+    && curl -sL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.aarch64 -o /usr/local/bin/ttyd \
+    && chmod +x /usr/local/bin/ttyd
 
 # Create non-root user
 RUN groupadd -g ${GID} fq51bbs && \
