@@ -166,6 +166,7 @@ class LoggingConfig:
     file: str = "/var/log/fq51bbs.log"
     max_size_mb: int = 10
     backup_count: int = 3
+    enabled: bool = True  # Added for compatibility
 
 
 @dataclass
@@ -232,6 +233,32 @@ class Config:
         return asdict(self)
 
 
+def _coerce_types(data: dict, dataclass_type) -> dict:
+    """Coerce string values to proper types based on dataclass field annotations."""
+    from dataclasses import fields
+    result = {}
+    field_types = {f.name: f.type for f in fields(dataclass_type)}
+
+    for key, value in data.items():
+        if key not in field_types:
+            continue  # Skip unknown fields
+        expected_type = field_types[key]
+
+        # Handle string-to-bool conversion
+        if expected_type == bool and isinstance(value, str):
+            result[key] = value.lower() in ('true', '1', 'yes')
+        # Handle string-to-int conversion
+        elif expected_type == int and isinstance(value, str):
+            try:
+                result[key] = int(value)
+            except ValueError:
+                result[key] = value
+        else:
+            result[key] = value
+
+    return result
+
+
 def load_config(path: Path) -> Config:
     """Load configuration from TOML file."""
     config = Config()
@@ -244,47 +271,47 @@ def load_config(path: Path) -> Config:
 
     # Map TOML sections to config dataclasses
     if "bbs" in data:
-        config.bbs = BBSConfig(**data["bbs"])
+        config.bbs = BBSConfig(**_coerce_types(data["bbs"], BBSConfig))
 
     if "database" in data:
-        config.database = DatabaseConfig(**data["database"])
+        config.database = DatabaseConfig(**_coerce_types(data["database"], DatabaseConfig))
 
     if "meshtastic" in data:
-        config.meshtastic = MeshtasticConfig(**data["meshtastic"])
+        config.meshtastic = MeshtasticConfig(**_coerce_types(data["meshtastic"], MeshtasticConfig))
 
     if "crypto" in data:
-        config.crypto = CryptoConfig(**data["crypto"])
+        config.crypto = CryptoConfig(**_coerce_types(data["crypto"], CryptoConfig))
 
     if "features" in data:
-        config.features = FeaturesConfig(**data["features"])
+        config.features = FeaturesConfig(**_coerce_types(data["features"], FeaturesConfig))
 
     if "operating_mode" in data:
-        config.operating_mode = OperatingModeConfig(**data["operating_mode"])
+        config.operating_mode = OperatingModeConfig(**_coerce_types(data["operating_mode"], OperatingModeConfig))
 
     if "repeater" in data:
-        config.repeater = RepeaterConfig(**data["repeater"])
+        config.repeater = RepeaterConfig(**_coerce_types(data["repeater"], RepeaterConfig))
 
     if "sync" in data:
         sync_data = data["sync"].copy()
         peers = []
         for peer_data in sync_data.pop("peers", []):
             peers.append(SyncPeer(**peer_data))
-        config.sync = SyncConfig(**sync_data, peers=peers)
+        config.sync = SyncConfig(**_coerce_types(sync_data, SyncConfig), peers=peers)
 
     if "admin_channel" in data:
-        config.admin_channel = AdminChannelConfig(**data["admin_channel"])
+        config.admin_channel = AdminChannelConfig(**_coerce_types(data["admin_channel"], AdminChannelConfig))
 
     if "rate_limits" in data:
-        config.rate_limits = RateLimitsConfig(**data["rate_limits"])
+        config.rate_limits = RateLimitsConfig(**_coerce_types(data["rate_limits"], RateLimitsConfig))
 
     if "web_reader" in data:
-        config.web_reader = WebReaderConfig(**data["web_reader"])
+        config.web_reader = WebReaderConfig(**_coerce_types(data["web_reader"], WebReaderConfig))
 
     if "cli_config" in data:
-        config.cli_config = CLIConfigSettings(**data["cli_config"])
+        config.cli_config = CLIConfigSettings(**_coerce_types(data["cli_config"], CLIConfigSettings))
 
     if "logging" in data:
-        config.logging = LoggingConfig(**data["logging"])
+        config.logging = LoggingConfig(**_coerce_types(data["logging"], LoggingConfig))
 
     return config
 
