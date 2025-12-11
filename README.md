@@ -20,25 +20,26 @@ Lightweight BBS for Meshtastic Mesh Networks
 git clone https://forge.echo6.co/fq51bbs/fq51bbs.git
 cd fq51bbs
 
-# IMPORTANT: Create config.toml BEFORE starting Docker
-cp config.example.toml config.toml
-# Edit config.toml - CHANGE admin_password!
+# First run - interactive setup wizard
+docker-compose up
 
-# Build and run
+# After setup completes, run in background
 docker-compose up -d
 
 # View logs
 docker-compose logs -f
 ```
 
-> **Note**: You MUST create `config.toml` before running `docker-compose up`.
-> If Docker starts without the file, it will create a directory instead,
-> causing errors. The container will show helpful instructions if this happens.
+The first run launches an interactive setup wizard to configure your BBS.
+Configuration is stored in the Docker volume and persists across restarts.
 
 ### Raspberry Pi
 
 ```bash
-# On RPi Zero 2 W
+# On RPi Zero 2 W - first run for setup
+docker-compose -f docker-compose.rpi.yml up
+
+# Then run in background
 docker-compose -f docker-compose.rpi.yml up -d
 ```
 
