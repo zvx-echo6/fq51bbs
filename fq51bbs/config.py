@@ -33,8 +33,8 @@ class BBSConfig:
 @dataclass
 class DatabaseConfig:
     """Database settings."""
-    path: str = "/var/lib/fq51bbs/fq51bbs.db"
-    backup_path: str = "/var/lib/fq51bbs/backups"
+    path: str = "/data/fq51bbs.db"
+    backup_path: str = "/data/backups"
     backup_interval_hours: int = 24
 
 
