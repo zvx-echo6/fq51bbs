@@ -6,8 +6,9 @@
 # - SD Card storage
 #
 # Usage:
-#   docker-compose -f docker-compose.rpi.yml up    # First run - setup wizard
-#   docker-compose -f docker-compose.rpi.yml up -d # Run in background
+#   docker compose -f docker-compose.rpi.yml up -d
+#
+# Web config: http://raspberrypi:7681
 
 services:
   fq51bbs:
@@ -30,12 +31,11 @@ services:
     #   - /dev/ttyACM0:/dev/ttyACM0
     #   - /dev/serial0:/dev/serial0
 
+    ports:
+      - "7681:7681"
+
     volumes:
       - fq51bbs_data:/data
-
-    # Run interactively for first-time setup wizard
-    stdin_open: true
-    tty: true
 
     # Stricter resource limits for RPi
     deploy:

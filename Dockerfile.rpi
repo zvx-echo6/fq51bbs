@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     udev \
     libffi-dev \
     dialog \
+    ttyd \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 

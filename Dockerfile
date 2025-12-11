@@ -35,6 +35,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     # For dialog-based config tool
     dialog \
+    # For web-based terminal access
+    ttyd \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user

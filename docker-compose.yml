@@ -1,15 +1,15 @@
 # FQ51BBS Docker Compose Configuration
 #
 # Usage:
-#   docker compose run --rm fq51bbs fq51-config      # Config menu (dialog TUI)
-#   docker compose run --rm fq51bbs fq51-config -w   # Setup wizard
-#   docker compose up -d                              # Run BBS in background
-#   docker compose --profile config up -d             # Enable web config (port 7681)
+#   docker compose up -d                  # Start BBS + web config
+#   docker compose logs -f                # View logs
+#
+# Web config: http://localhost:7681 (dialog-based TUI in browser)
 #
 # Config is stored in the fq51bbs_data volume at /data/config.toml
 #
 # For serial connection (USB), uncomment the devices section below
-# For TCP connection, configure via the setup wizard
+# For TCP connection, configure via web interface
 
 services:
   fq51bbs:
@@ -27,6 +27,10 @@ services:
     # devices:
     #   - /dev/ttyUSB0:/dev/ttyUSB0
     #   - /dev/ttyACM0:/dev/ttyACM0
+
+    ports:
+      # Web-based config interface (ttyd)
+      - "7681:7681"
 
     volumes:
       # Persistent data (database, config, backups)
@@ -59,25 +63,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-  # Web-based configuration terminal (ttyd)
-  fq51bbs-config:
-    image: tsl0922/ttyd:latest
-    container_name: fq51bbs-config
-    restart: unless-stopped
-    profiles:
-      - config  # Start with: docker compose --profile config up -d
-    command: ["-W", "ttyd", "-p", "7681", "-t", "fontSize=16", "-t", "theme={'background':'#1a1a2e','foreground':'#00ff00'}", "docker", "exec", "-it", "fq51bbs", "fq51-config"]
-    ports:
-      - "7681:7681"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    depends_on:
-      - fq51bbs
-    deploy:
-      resources:
-        limits:
-          memory: 64M
 
   # Optional: Web reader interface (read-only access)
   fq51bbs-web:
