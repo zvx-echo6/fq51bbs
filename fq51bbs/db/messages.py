@@ -298,3 +298,128 @@ class MessageRepository:
             forwarded_to=row["forwarded_to"],
             hop_count=row["hop_count"]
         )
+
+    # === Remote Mail Methods ===
+
+    def create_remote_mail(
+        self,
+        sender_username: str,
+        sender_bbs: str,
+        recipient_username: str,
+        recipient_bbs: str,
+        body: str,
+        origin_bbs: str
+    ) -> Optional[Message]:
+        """
+        Create an outgoing remote mail message (queued for delivery).
+
+        Stores the message with remote addressing info for sync to send.
+        Body is stored in plaintext since it will be encrypted by receiving BBS.
+        """
+        now_us = int(time.time() * 1_000_000)
+        msg_uuid = str(uuid.uuid4())
+
+        # Store remote addressing in forwarded_to field as JSON-like format
+        remote_addr = f"{sender_username}@{sender_bbs}>{recipient_username}@{recipient_bbs}"
+
+        try:
+            cursor = self.db.execute("""
+                INSERT INTO messages (
+                    uuid, msg_type, body_enc, created_at_us,
+                    origin_bbs, forwarded_to, hop_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                msg_uuid,
+                "remote_mail",
+                body.encode('utf-8'),  # Store plaintext for remote
+                now_us,
+                origin_bbs,
+                remote_addr,
+                0
+            ))
+
+            logger.info(f"Created remote mail {msg_uuid[:8]}: {sender_username}@{sender_bbs} -> {recipient_username}@{recipient_bbs}")
+
+            return Message(
+                id=cursor.lastrowid,
+                uuid=msg_uuid,
+                msg_type=MessageType.MAIL,
+                body_enc=body.encode('utf-8'),
+                created_at_us=now_us,
+                origin_bbs=origin_bbs,
+                forwarded_to=remote_addr,
+                hop_count=0
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to create remote mail: {e}")
+            return None
+
+    def create_incoming_remote_mail(
+        self,
+        uuid: str,
+        from_user: str,
+        from_bbs: str,
+        to_user_id: int,
+        body: str
+    ) -> Optional[Message]:
+        """
+        Create a mail message received from a remote BBS.
+
+        This mail is stored locally for the recipient to read.
+        Body is stored in plaintext (encryption happens at read time if needed).
+        """
+        now_us = int(time.time() * 1_000_000)
+
+        # Check for duplicate
+        if self.message_exists(uuid):
+            logger.debug(f"Remote mail {uuid[:8]} already exists, skipping")
+            return None
+
+        try:
+            # Store sender info in a way read_mail can parse
+            sender_info = f"{from_user}@{from_bbs}"
+
+            cursor = self.db.execute("""
+                INSERT INTO messages (
+                    uuid, msg_type, recipient_user_id, body_enc,
+                    created_at_us, origin_bbs, forwarded_to
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                uuid,
+                "mail",
+                to_user_id,
+                body.encode('utf-8'),
+                now_us,
+                from_bbs,
+                sender_info  # Store sender info for display
+            ))
+
+            logger.info(f"Stored incoming remote mail {uuid[:8]} from {from_user}@{from_bbs}")
+
+            return Message(
+                id=cursor.lastrowid,
+                uuid=uuid,
+                msg_type=MessageType.MAIL,
+                recipient_user_id=to_user_id,
+                body_enc=body.encode('utf-8'),
+                created_at_us=now_us,
+                origin_bbs=from_bbs,
+                forwarded_to=sender_info
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to store incoming remote mail: {e}")
+            return None
+
+    def get_pending_remote_mail(self, limit: int = 10) -> list[Message]:
+        """Get remote mail waiting to be sent."""
+        rows = self.db.fetchall("""
+            SELECT * FROM messages
+            WHERE msg_type = 'remote_mail'
+            AND delivered_at_us IS NULL
+            AND delivery_attempts < 3
+            ORDER BY created_at_us
+            LIMIT ?
+        """, (limit,))
+        return [self._row_to_message(row) for row in rows]

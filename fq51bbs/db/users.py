@@ -324,3 +324,11 @@ class UserNodeRepository:
             WHERE un.user_id = ? AND un.is_primary = 1
         """, (user_id,))
         return row["node_id"] if row else None
+
+    def is_node_associated(self, user_id: int, node_db_id: int) -> bool:
+        """Check if a node is associated with a user."""
+        row = self.db.fetchone("""
+            SELECT 1 FROM user_nodes
+            WHERE user_id = ? AND node_id = ?
+        """, (user_id, node_db_id))
+        return row is not None

@@ -59,10 +59,12 @@ class CommandDispatcher:
         self.register("NODES", self.cmd_nodes, "authenticated", "List your nodes")
 
         # Mail commands
-        self.register("SEND", self.cmd_send_mail, "authenticated", "Send mail: SEND <to> <msg>")
+        self.register("SEND", self.cmd_send_mail, "authenticated", "Send mail: SEND <to[@bbs]> <msg>")
         self.register("MAIL", self.cmd_check_mail, "authenticated", "Check mail count")
         self.register("READ", self.cmd_read_mail, "authenticated", "Read mail: READ [n]")
         self.register("DELETE", self.cmd_delete_mail, "authenticated", "Delete mail: DELETE <n>")
+        self.register("REPLY", self.cmd_reply, "authenticated", "Reply to mail: REPLY <n> <msg>")
+        self.register("FORWARD", self.cmd_forward, "authenticated", "Forward mail: FORWARD <n> <to[@bbs]>")
 
         # Board commands
         self.register("BOARD", self.cmd_boards, "always", "List/enter board: BOARD [name]")
@@ -70,12 +72,18 @@ class CommandDispatcher:
         self.register("POST", self.cmd_post, "authenticated", "Post: POST <subj> <body>")
         self.register("QUIT", self.cmd_quit_board, "always", "Quit board")
 
+        # Peer/federation commands
+        self.register("PEERS", self.cmd_peers, "always", "List connected BBS peers")
+
         # Admin commands
         self.register("BAN", self.cmd_ban, "admin", "Ban user: BAN <user> [reason]")
         self.register("UNBAN", self.cmd_unban, "admin", "Unban user: UNBAN <user>")
         self.register("MKBOARD", self.cmd_mkboard, "admin", "Create board: MKBOARD <name> [desc]")
         self.register("RMBOARD", self.cmd_rmboard, "admin", "Delete board: RMBOARD <name>")
         self.register("ANNOUNCE", self.cmd_announce, "admin", "Broadcast: ANNOUNCE <msg>")
+
+        # Node management
+        self.register("NODES", self.cmd_nodes, "authenticated", "List/remove nodes: NODES [rm <node>]")
 
         # Self-destruct
         self.register("DESTRUCT", self.cmd_destruct, "authenticated", "Delete all your data")
@@ -175,7 +183,7 @@ class CommandDispatcher:
 
     def _check_feature(self, cmd: str) -> bool:
         """Check if the feature for this command is enabled."""
-        mail_commands = {"SEND", "MAIL", "READ", "DELETE"}
+        mail_commands = {"SEND", "MAIL", "READ", "DELETE", "REPLY", "FORWARD"}
         board_commands = {"BOARD", "LIST", "POST", "QUIT"}
 
         if cmd in mail_commands and not self.bbs.config.features.mail_enabled:
@@ -208,23 +216,28 @@ class CommandDispatcher:
         # Build help messages - each under 150 chars
         help_msgs = [
             (
-                f"[{callsign}] Commands 1/3\n"
+                f"[{callsign}] Commands 1/4\n"
                 "REGISTER user pass - New account\n"
                 "LOGIN user pass - Login\n"
                 "LOGOUT - Logout | INFO - BBS info"
             ),
             (
-                f"[{callsign}] Mail 2/3\n"
-                "SEND user msg - Send mail\n"
-                "MAIL - Check inbox\n"
-                "READ - List mail | READ 3 - Read msg 3\n"
-                "DELETE 3 - Delete msg 3"
+                f"[{callsign}] Mail 2/4\n"
+                "SEND user[@bbs] msg - Send mail\n"
+                "MAIL - Check inbox | READ [n] - Read\n"
+                "REPLY [n] msg | FORWARD [n] user[@bbs]"
             ),
             (
-                f"[{callsign}] Boards 3/3\n"
-                "BOARD - List | BOARD general - Enter\n"
-                "LIST - Posts | READ 5 - Read post 5\n"
-                "POST title msg - New post | QUIT - Leave"
+                f"[{callsign}] Boards 3/4\n"
+                "BOARD - List | BOARD name - Enter\n"
+                "LIST - Posts | READ n - Read post\n"
+                "POST title msg - New | QUIT - Leave"
+            ),
+            (
+                f"[{callsign}] Other 4/4\n"
+                "PEERS - Show BBS network\n"
+                "NODES - Your devices | NODES rm id\n"
+                "DELETE n - Delete mail | DESTRUCT"
             ),
         ]
 
@@ -352,6 +365,21 @@ class CommandDispatcher:
         except Exception:
             return "Invalid username or password."
 
+        # Verify node association (2FA - must login from registered node)
+        from ..db.users import NodeRepository, UserNodeRepository
+        node_repo = NodeRepository(self.bbs.db)
+        user_node_repo = UserNodeRepository(self.bbs.db)
+
+        # Get node DB record for sender
+        node = node_repo.get_node_by_id(sender)
+        if node:
+            # Check if this node is associated with the user
+            if not user_node_repo.is_node_associated(user.id, node.id):
+                return "Node not authorized for this account. Contact admin."
+        else:
+            # Node not in database at all - definitely not associated
+            return "Node not authorized for this account. Contact admin."
+
         # Update session
         session["user_id"] = user.id
         session["username"] = user.username
@@ -440,29 +468,65 @@ class CommandDispatcher:
         return "Node not found or not associated with your account."
 
     def cmd_nodes(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """List user's associated nodes."""
+        """List or remove user's associated nodes."""
         from ..db.users import UserNodeRepository
         user_node_repo = UserNodeRepository(self.bbs.db)
 
+        # Check for removal command: NODES rm <node_id>
+        if args.lower().startswith("rm "):
+            node_to_remove = args[3:].strip()
+            if not node_to_remove:
+                return "Usage: NODES rm <node_id>"
+
+            # Get current nodes
+            nodes = user_node_repo.get_user_nodes(session["user_id"])
+
+            # Don't allow removing last node
+            if len(nodes) <= 1:
+                return "Cannot remove your only node. Add another first."
+
+            # Don't allow removing current node (would lock self out)
+            if node_to_remove == sender:
+                return "Cannot remove the node you're currently using."
+
+            if user_node_repo.remove_node(session["user_id"], node_to_remove):
+                return f"Node {node_to_remove} removed."
+            return "Node not found or not associated with your account."
+
+        # List nodes
         nodes = user_node_repo.get_user_nodes(session["user_id"])
         if not nodes:
             return "No nodes associated with your account."
 
-        return "Your nodes: " + ", ".join(nodes)
+        # Mark current node
+        node_list = []
+        for n in nodes:
+            if n == sender:
+                node_list.append(f"{n} (current)")
+            else:
+                node_list.append(n)
+
+        return "Your nodes:\n" + "\n".join(node_list)
 
     # === Mail Commands ===
 
     def cmd_send_mail(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """Send mail: SEND <to> <message>"""
+        """Send mail: SEND <to[@bbs]> <message>"""
         parts = args.split(maxsplit=1)
         if len(parts) < 2:
-            return "Usage: SEND <username> <message>"
+            return "Usage: SEND <user[@bbs]> <message>"
 
         recipient, body = parts
 
         if len(body) > 1000:
             return "Message too long (max 1000 chars)."
 
+        # Check for remote addressing (user@bbs)
+        if "@" in recipient:
+            username, remote_bbs = recipient.split("@", 1)
+            return self._send_remote_mail(session, sender, username, remote_bbs, body)
+
+        # Local mail
         message, error = self.bbs.mail_service.compose_mail(
             sender_user_id=session["user_id"],
             sender_node_id=sender,
@@ -474,6 +538,57 @@ class CommandDispatcher:
             return error
 
         return f"Mail sent to {recipient}."
+
+    def _send_remote_mail(self, session: dict, sender_node: str, recipient: str, remote_bbs: str, body: str) -> str:
+        """Send mail to a user on a remote BBS."""
+        # Find the peer BBS
+        if not self.bbs.sync_manager:
+            return "Remote mail not available (sync disabled)."
+
+        # Pre-flight check: max 450 chars for remote mail
+        if len(body) > 450:
+            return f"Message too long for remote delivery (max 450 chars, yours: {len(body)})"
+
+        # Check if we know the destination or can relay
+        peer = self.bbs.sync_manager.get_peer_by_name(remote_bbs)
+        if not peer and not self.bbs.sync_manager.list_peers():
+            return f"No route to {remote_bbs}. No peers configured."
+
+        # Get sender username
+        from ..db.users import UserRepository
+        user_repo = UserRepository(self.bbs.db)
+        sender_user = user_repo.get_user_by_id(session["user_id"])
+        if not sender_user:
+            return "Error: sender not found."
+
+        # Queue remote mail for sync
+        from ..db.messages import MessageRepository
+        msg_repo = MessageRepository(self.bbs.db)
+
+        message = msg_repo.create_remote_mail(
+            sender_username=sender_user.username,
+            sender_bbs=self.bbs.config.bbs.callsign,
+            recipient_username=recipient,
+            recipient_bbs=remote_bbs.upper(),
+            body=body,
+            origin_bbs=self.bbs.config.bbs.callsign
+        )
+
+        if message:
+            # Trigger immediate send via sync manager
+            import asyncio
+            asyncio.create_task(
+                self.bbs.sync_manager.send_remote_mail(
+                    sender_username=sender_user.username,
+                    sender_bbs=self.bbs.config.bbs.callsign,
+                    recipient_username=recipient,
+                    recipient_bbs=remote_bbs.upper(),
+                    body=body,
+                    mail_uuid=message.uuid
+                )
+            )
+            return f"Mail queued for {recipient}@{remote_bbs}."
+        return "Failed to queue remote mail."
 
     def cmd_check_mail(self, sender: str, args: str, session: dict, channel: int) -> str:
         """Check mail count and list recent."""
@@ -521,16 +636,98 @@ class CommandDispatcher:
         if error:
             return error
 
+        # Store last read message for REPLY
+        session["last_mail_id"] = mail["id"]
+        session["last_mail_from"] = mail["from"]
+        session["last_mail_from_bbs"] = mail.get("from_bbs")  # For remote mail
+
         lines = [
             f"=== Mail #{mail['id']} ===",
             f"From: {mail['from']}",
             f"Date: {mail['date']}",
             f"Subject: {mail['subject']}",
             "",
-            mail['body']
+            mail['body'],
+            "",
+            "REPLY <msg> to reply | FORWARD <user[@bbs]> to forward"
         ]
 
         return "\n".join(lines)
+
+    def cmd_reply(self, sender: str, args: str, session: dict, channel: int) -> str:
+        """Reply to mail: REPLY [n] <message> or REPLY <message> for last read"""
+        if not args:
+            return "Usage: REPLY [msg_id] <message>"
+
+        # Check if first arg is a message ID
+        parts = args.split(maxsplit=1)
+        message_id = None
+        reply_body = args
+
+        if len(parts) >= 2:
+            try:
+                message_id = int(parts[0])
+                reply_body = parts[1]
+            except ValueError:
+                # First part isn't a number, use last read message
+                pass
+
+        # Get original message
+        if message_id:
+            mail, error = self.bbs.mail_service.read_mail(session["user_id"], message_id)
+            if error:
+                return error
+            reply_to = mail["from"]
+            reply_to_bbs = mail.get("from_bbs")
+        elif session.get("last_mail_from"):
+            reply_to = session["last_mail_from"]
+            reply_to_bbs = session.get("last_mail_from_bbs")
+        else:
+            return "No message to reply to. Use READ <n> first or REPLY <n> <msg>"
+
+        # Build recipient address
+        if reply_to_bbs and reply_to_bbs != self.bbs.config.bbs.callsign:
+            recipient = f"{reply_to}@{reply_to_bbs}"
+        else:
+            recipient = reply_to
+
+        # Send reply
+        return self.cmd_send_mail(sender, f"{recipient} {reply_body}", session, channel)
+
+    def cmd_forward(self, sender: str, args: str, session: dict, channel: int) -> str:
+        """Forward mail: FORWARD <n> <to[@bbs]> or FORWARD <to[@bbs]> for last read"""
+        if not args:
+            return "Usage: FORWARD [msg_id] <user[@bbs]>"
+
+        parts = args.split(maxsplit=1)
+        message_id = None
+        forward_to = args
+
+        # Check if first arg is a message ID
+        if len(parts) >= 2:
+            try:
+                message_id = int(parts[0])
+                forward_to = parts[1]
+            except ValueError:
+                pass
+
+        # Get original message
+        if message_id:
+            mail, error = self.bbs.mail_service.read_mail(session["user_id"], message_id)
+            if error:
+                return error
+        elif session.get("last_mail_id"):
+            mail, error = self.bbs.mail_service.read_mail(session["user_id"], session["last_mail_id"])
+            if error:
+                return error
+        else:
+            return "No message to forward. Use READ <n> first or FORWARD <n> <user>"
+
+        # Build forwarded message body
+        fwd_body = f"[FWD from {mail['from']}]\n{mail['body']}"
+
+        # Send forwarded message
+        return self.cmd_send_mail(sender, f"{forward_to} {fwd_body}", session, channel)
 
     def cmd_delete_mail(self, sender: str, args: str, session: dict, channel: int) -> str:
         """Delete mail: DELETE <n>"""
@@ -547,6 +744,27 @@ class CommandDispatcher:
             return error
 
         return f"Message #{message_id} deleted."
+
+    # === Peer/Federation Commands ===
+
+    def cmd_peers(self, sender: str, args: str, session: dict, channel: int) -> str:
+        """List connected BBS peers for remote mail."""
+        if not self.bbs.sync_manager:
+            return "Sync/federation not enabled."
+
+        peers = self.bbs.sync_manager.list_peers()
+        if not peers:
+            return "No BBS peers configured."
+
+        lines = ["=== BBS Peers ===", ""]
+        for peer in peers:
+            status = "online" if peer.get("online") else "offline"
+            lines.append(f"  {peer['name']:<12} [{status}]")
+
+        lines.append("")
+        lines.append("Send mail: SEND user@PEERNAME message")
+
+        return "\n".join(lines)
 
     # === Board Commands ===
 

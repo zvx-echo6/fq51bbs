@@ -62,6 +62,11 @@ class SyncManager:
         self._pending_syncs = []
         self._sync_lock = asyncio.Lock()
 
+        # Remote mail state
+        self._pending_remote_mail = {}  # uuid -> {chunks, dest_node, timestamp}
+        self._incoming_remote_mail = {}  # uuid -> {from/to info, received_parts}
+        self._relay_mail = {}  # uuid -> {origin_node, dest_node}
+
         # Protocol handlers
         self._fq51 = FQ51NativeSync(self)
         self._tc2 = TC2Compatibility(self)
@@ -235,6 +240,11 @@ class SyncManager:
         # Update peer status
         self._update_peer_status(sender)
 
+        # Check for remote mail protocol first
+        if message.startswith("MAIL"):
+            if self.handle_mail_protocol(message, sender):
+                return True
+
         # Try FQ51 native first (most specific prefix)
         if self._fq51.is_fq51_message(message):
             return self._fq51.handle_message(message, sender)
@@ -396,3 +406,448 @@ class SyncManager:
             "sync_enabled": self.config.enabled,
             "sync_interval_minutes": self.config.bulletin_sync_interval_minutes,
         }
+
+    def list_peers(self) -> list[dict]:
+        """
+        List all configured peers for PEERS command.
+
+        Returns list of dicts with name, online status.
+        """
+        result = []
+        now = time.time()
+        timeout = 300  # 5 minutes for online status
+
+        for node_id, peer in self._peers.items():
+            status = self._peer_status.get(node_id, {})
+            last_seen = status.get("last_seen", 0)
+            online = (now - last_seen) < timeout if last_seen else False
+
+            result.append({
+                "name": peer.name.upper(),
+                "node_id": node_id,
+                "protocol": peer.protocol,
+                "online": online,
+            })
+
+        return result
+
+    def get_peer_by_name(self, name: str):
+        """
+        Find a peer by name (case-insensitive).
+
+        Args:
+            name: Peer BBS name to look up
+
+        Returns:
+            Peer config object or None if not found
+        """
+        name_upper = name.upper()
+        for node_id, peer in self._peers.items():
+            if peer.name.upper() == name_upper:
+                return peer
+        return None
+
+    def get_peer_node_id(self, name: str) -> Optional[str]:
+        """
+        Get peer's node ID by name.
+
+        Args:
+            name: Peer BBS name
+
+        Returns:
+            Node ID or None if not found
+        """
+        name_upper = name.upper()
+        for node_id, peer in self._peers.items():
+            if peer.name.upper() == name_upper:
+                return node_id
+        return None
+
+    # === Remote Mail Protocol ===
+
+    async def send_remote_mail(
+        self,
+        sender_username: str,
+        sender_bbs: str,
+        recipient_username: str,
+        recipient_bbs: str,
+        body: str,
+        mail_uuid: str
+    ) -> tuple[bool, str]:
+        """
+        Send mail to a user on a remote BBS.
+
+        Protocol:
+        1. MAILREQ - Request delivery (check route)
+        2. Wait for MAILACK/MAILNAK
+        3. MAILDAT - Send body chunks (max 3 x 150 chars)
+
+        Args:
+            sender_username: Sending user
+            sender_bbs: Sender's home BBS callsign
+            recipient_username: Destination user
+            recipient_bbs: Destination BBS callsign
+            body: Message body (max 450 chars)
+            mail_uuid: Unique message ID
+
+        Returns:
+            (success, error_message)
+        """
+        # Pre-flight check
+        max_body_len = 450  # 3 chunks x 150 chars
+        if len(body) > max_body_len:
+            return False, f"Message too long for remote delivery (max {max_body_len} chars)"
+
+        # Find route to destination
+        dest_node = self.get_peer_node_id(recipient_bbs)
+
+        if dest_node:
+            # Direct peer - send straight there
+            route = [sender_bbs]
+        else:
+            # Not a direct peer - try to find relay
+            # For now, just try the first peer as relay
+            if not self._peers:
+                return False, f"No route to {recipient_bbs}"
+
+            # Pick first peer as relay (could be smarter)
+            relay_node = next(iter(self._peers.keys()))
+            dest_node = relay_node
+            route = [sender_bbs]
+
+        # Calculate chunks
+        chunks = self._chunk_message(body, 150)
+        num_parts = len(chunks)
+
+        # Build MAILREQ
+        # Format: MAILREQ|uuid|from_user|from_bbs|to_user|to_bbs|hop|parts|route
+        hop = 1
+        route_str = ",".join(route)
+        mailreq = f"MAILREQ|{mail_uuid}|{sender_username}|{sender_bbs}|{recipient_username}|{recipient_bbs}|{hop}|{num_parts}|{route_str}"
+
+        # Send MAILREQ
+        try:
+            await self.mesh.send_dm(mailreq, dest_node)
+            logger.info(f"Sent MAILREQ for {mail_uuid[:8]} to {dest_node}")
+
+            # Store pending mail for when we receive ACK
+            self._pending_remote_mail[mail_uuid] = {
+                "chunks": chunks,
+                "dest_node": dest_node,
+                "timestamp": time.time(),
+                "recipient": f"{recipient_username}@{recipient_bbs}",
+            }
+
+            return True, ""
+
+        except Exception as e:
+            logger.error(f"Failed to send MAILREQ: {e}")
+            return False, f"Failed to send: {e}"
+
+    def _chunk_message(self, body: str, chunk_size: int) -> list[str]:
+        """Split message into chunks."""
+        chunks = []
+        for i in range(0, len(body), chunk_size):
+            chunks.append(body[i:i + chunk_size])
+        return chunks
+
+    def handle_mail_protocol(self, message: str, sender: str) -> bool:
+        """
+        Handle incoming mail protocol messages.
+
+        Returns True if message was handled.
+        """
+        if message.startswith("MAILREQ|"):
+            return self._handle_mailreq(message, sender)
+        elif message.startswith("MAILACK|"):
+            return self._handle_mailack(message, sender)
+        elif message.startswith("MAILNAK|"):
+            return self._handle_mailnak(message, sender)
+        elif message.startswith("MAILDAT|"):
+            return self._handle_maildat(message, sender)
+        elif message.startswith("MAILDLV|"):
+            return self._handle_maildlv(message, sender)
+        return False
+
+    def _handle_mailreq(self, message: str, sender: str) -> bool:
+        """Handle incoming MAILREQ - route check."""
+        try:
+            parts = message.split("|")
+            if len(parts) < 9:
+                logger.warning(f"Invalid MAILREQ format: {message}")
+                return False
+
+            _, uuid, from_user, from_bbs, to_user, to_bbs, hop, num_parts, route = parts[:9]
+            hop = int(hop)
+            num_parts = int(num_parts)
+            route_list = route.split(",")
+
+            my_callsign = self.bbs.config.bbs.callsign.upper()
+
+            # Check for loop (am I already in route?)
+            if my_callsign in [r.upper() for r in route_list]:
+                # Loop detected - NAK
+                asyncio.create_task(
+                    self.mesh.send_dm(f"MAILNAK|{uuid}|LOOP", sender)
+                )
+                logger.warning(f"Loop detected for {uuid[:8]}")
+                return True
+
+            # Check max hops
+            if hop > 5:
+                asyncio.create_task(
+                    self.mesh.send_dm(f"MAILNAK|{uuid}|MAXHOPS", sender)
+                )
+                return True
+
+            # Is this mail for us (our BBS)?
+            if to_bbs.upper() == my_callsign:
+                # Check if recipient exists locally
+                from ..db.users import UserRepository
+                user_repo = UserRepository(self.db)
+                recipient = user_repo.get_user_by_username(to_user)
+
+                if not recipient:
+                    asyncio.create_task(
+                        self.mesh.send_dm(f"MAILNAK|{uuid}|NOUSER", sender)
+                    )
+                    return True
+
+                # Accept - store pending and ACK
+                self._incoming_remote_mail[uuid] = {
+                    "from_user": from_user,
+                    "from_bbs": from_bbs,
+                    "to_user": to_user,
+                    "to_bbs": to_bbs,
+                    "num_parts": num_parts,
+                    "received_parts": {},
+                    "sender_node": sender,
+                    "timestamp": time.time(),
+                }
+                asyncio.create_task(
+                    self.mesh.send_dm(f"MAILACK|{uuid}|OK", sender)
+                )
+                logger.info(f"Accepted MAILREQ {uuid[:8]} for {to_user}")
+                return True
+
+            # Not for us - need to relay
+            dest_node = self.get_peer_node_id(to_bbs)
+            if not dest_node:
+                # Don't know destination - try to relay to another peer
+                # For now, just NAK
+                asyncio.create_task(
+                    self.mesh.send_dm(f"MAILNAK|{uuid}|NOROUTE", sender)
+                )
+                return True
+
+            # Relay the request
+            route_list.append(my_callsign)
+            new_route = ",".join(route_list)
+            relay_req = f"MAILREQ|{uuid}|{from_user}|{from_bbs}|{to_user}|{to_bbs}|{hop+1}|{num_parts}|{new_route}"
+
+            # Store relay state
+            self._relay_mail[uuid] = {
+                "origin_node": sender,
+                "dest_node": dest_node,
+                "timestamp": time.time(),
+            }
+
+            asyncio.create_task(self.mesh.send_dm(relay_req, dest_node))
+            logger.info(f"Relaying MAILREQ {uuid[:8]} to {to_bbs}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error handling MAILREQ: {e}")
+            return False
+
+    def _handle_mailack(self, message: str, sender: str) -> bool:
+        """Handle MAILACK - send message chunks."""
+        try:
+            parts = message.split("|")
+            if len(parts) < 3:
+                return False
+
+            _, uuid, status = parts[:3]
+
+            # Check if this is a relay ACK
+            if uuid in self._relay_mail:
+                # Forward ACK back to origin
+                relay = self._relay_mail[uuid]
+                asyncio.create_task(
+                    self.mesh.send_dm(message, relay["origin_node"])
+                )
+                return True
+
+            # Check if we have pending mail for this UUID
+            if uuid not in self._pending_remote_mail:
+                logger.warning(f"Unexpected MAILACK for {uuid[:8]}")
+                return False
+
+            pending = self._pending_remote_mail[uuid]
+            chunks = pending["chunks"]
+            dest_node = pending["dest_node"]
+
+            # Send chunks with delay
+            asyncio.create_task(self._send_mail_chunks(uuid, chunks, dest_node))
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error handling MAILACK: {e}")
+            return False
+
+    async def _send_mail_chunks(self, uuid: str, chunks: list[str], dest_node: str):
+        """Send message body chunks with delays."""
+        import random
+        total = len(chunks)
+
+        for i, chunk in enumerate(chunks, 1):
+            # Format: MAILDAT|uuid|part/total|data
+            maildat = f"MAILDAT|{uuid}|{i}/{total}|{chunk}"
+            await self.mesh.send_dm(maildat, dest_node)
+
+            if i < total:
+                # Delay between chunks
+                await asyncio.sleep(random.uniform(2.2, 2.6))
+
+        logger.info(f"Sent {total} chunks for {uuid[:8]}")
+
+        # Clean up pending
+        if uuid in self._pending_remote_mail:
+            del self._pending_remote_mail[uuid]
+
+    def _handle_mailnak(self, message: str, sender: str) -> bool:
+        """Handle MAILNAK - delivery rejected."""
+        try:
+            parts = message.split("|")
+            if len(parts) < 3:
+                return False
+
+            _, uuid, reason = parts[:3]
+
+            # Check if relay
+            if uuid in self._relay_mail:
+                relay = self._relay_mail.pop(uuid)
+                asyncio.create_task(
+                    self.mesh.send_dm(message, relay["origin_node"])
+                )
+                return True
+
+            # Clean up pending
+            if uuid in self._pending_remote_mail:
+                pending = self._pending_remote_mail.pop(uuid)
+                logger.warning(f"Mail {uuid[:8]} rejected: {reason}")
+                # TODO: Notify sender of failure
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error handling MAILNAK: {e}")
+            return False
+
+    def _handle_maildat(self, message: str, sender: str) -> bool:
+        """Handle MAILDAT - message chunk received."""
+        try:
+            parts = message.split("|", 3)
+            if len(parts) < 4:
+                return False
+
+            _, uuid, part_info, data = parts
+            part_num, total_parts = map(int, part_info.split("/"))
+
+            # Check if relay
+            if uuid in self._relay_mail:
+                relay = self._relay_mail[uuid]
+                asyncio.create_task(
+                    self.mesh.send_dm(message, relay["dest_node"])
+                )
+                return True
+
+            # Store chunk
+            if uuid not in self._incoming_remote_mail:
+                logger.warning(f"Unexpected MAILDAT for {uuid[:8]}")
+                return False
+
+            incoming = self._incoming_remote_mail[uuid]
+            incoming["received_parts"][part_num] = data
+
+            # Check if all parts received
+            if len(incoming["received_parts"]) >= incoming["num_parts"]:
+                # Reassemble and deliver
+                asyncio.create_task(self._deliver_remote_mail(uuid, incoming))
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error handling MAILDAT: {e}")
+            return False
+
+    async def _deliver_remote_mail(self, uuid: str, incoming: dict):
+        """Reassemble and deliver remote mail locally."""
+        try:
+            # Reassemble body
+            body_parts = []
+            for i in range(1, incoming["num_parts"] + 1):
+                if i in incoming["received_parts"]:
+                    body_parts.append(incoming["received_parts"][i])
+            body = "".join(body_parts)
+
+            # Look up local recipient
+            from ..db.users import UserRepository
+            user_repo = UserRepository(self.db)
+            recipient = user_repo.get_user_by_username(incoming["to_user"])
+
+            if not recipient:
+                logger.error(f"Recipient not found for {uuid[:8]}")
+                return
+
+            # Create local mail message
+            from ..db.messages import MessageRepository
+            msg_repo = MessageRepository(self.db)
+
+            msg_repo.create_incoming_remote_mail(
+                uuid=uuid,
+                from_user=incoming["from_user"],
+                from_bbs=incoming["from_bbs"],
+                to_user_id=recipient.id,
+                body=body
+            )
+
+            # Send delivery confirmation back
+            dlv = f"MAILDLV|{uuid}|OK|{incoming['to_user']}@{self.bbs.config.bbs.callsign}"
+            await self.mesh.send_dm(dlv, incoming["sender_node"])
+
+            logger.info(f"Delivered remote mail {uuid[:8]} to {incoming['to_user']}")
+
+            # Clean up
+            if uuid in self._incoming_remote_mail:
+                del self._incoming_remote_mail[uuid]
+
+        except Exception as e:
+            logger.error(f"Error delivering remote mail: {e}")
+
+    def _handle_maildlv(self, message: str, sender: str) -> bool:
+        """Handle MAILDLV - delivery confirmation."""
+        try:
+            parts = message.split("|")
+            if len(parts) < 4:
+                return False
+
+            _, uuid, status, dest = parts[:4]
+
+            # Check if relay
+            if uuid in self._relay_mail:
+                relay = self._relay_mail.pop(uuid)
+                asyncio.create_task(
+                    self.mesh.send_dm(message, relay["origin_node"])
+                )
+                return True
+
+            logger.info(f"Mail {uuid[:8]} delivered to {dest}")
+            # TODO: Update message status in database
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error handling MAILDLV: {e}")
+            return False
