@@ -77,7 +77,7 @@ python -m fq51bbs
 |---------|-------------|
 | `NODES` | List your registered nodes |
 | `ADDNODE <node_id>` | Add a new node (run from existing device) |
-| `NODES rm <node_id>` | Remove a node (can't remove last or current) |
+| `RMVNODE <node_id>` | Remove a node (can't remove last or current) |
 
 ### Mail
 | Command | Description |

@@ -55,7 +55,7 @@ class CommandDispatcher:
 
         # Node management
         self.register("ADDNODE", self.cmd_addnode, "authenticated", "Add node: ADDNODE <node_id>")
-        self.register("RMNODE", self.cmd_rmnode, "authenticated", "Remove node: RMNODE <node_id>")
+        self.register("RMVNODE", self.cmd_rmvnode, "authenticated", "Remove node: RMVNODE <node_id>")
         self.register("NODES", self.cmd_nodes, "authenticated", "List your nodes")
 
         # Mail commands
@@ -81,9 +81,6 @@ class CommandDispatcher:
         self.register("MKBOARD", self.cmd_mkboard, "admin", "Create board: MKBOARD <name> [desc]")
         self.register("RMBOARD", self.cmd_rmboard, "admin", "Delete board: RMBOARD <name>")
         self.register("ANNOUNCE", self.cmd_announce, "admin", "Broadcast: ANNOUNCE <msg>")
-
-        # Node management
-        self.register("NODES", self.cmd_nodes, "authenticated", "List/remove nodes: NODES [rm <node>]")
 
         # Self-destruct
         self.register("DESTRUCT", self.cmd_destruct, "authenticated", "Delete all your data")
@@ -219,25 +216,29 @@ class CommandDispatcher:
                 f"[{callsign}] Commands 1/4\n"
                 "REGISTER user pass - New account\n"
                 "LOGIN user pass - Login\n"
-                "LOGOUT - Logout | INFO - BBS info"
+                "LOGOUT - Log out\n"
+                "INFO - BBS info"
             ),
             (
                 f"[{callsign}] Mail 2/4\n"
                 "SEND user[@bbs] msg - Send mail\n"
-                "MAIL - Check inbox | READ [n] - Read\n"
-                "REPLY [n] msg | FORWARD [n] user[@bbs]"
+                "MAIL - Inbox, READ [n] - Read\n"
+                "REPLY [n] msg - Reply\n"
+                "FORWARD [n] user - Fwd"
             ),
             (
                 f"[{callsign}] Boards 3/4\n"
-                "BOARD - List | BOARD name - Enter\n"
-                "LIST - Posts | READ n - Read post\n"
-                "POST title msg - New | QUIT - Leave"
+                "BOARD - List boards\n"
+                "BOARD name - Enter board\n"
+                "LIST - Posts, READ n - Read\n"
+                "POST subj msg - New post"
             ),
             (
                 f"[{callsign}] Other 4/4\n"
-                "PEERS - Show BBS network\n"
-                "ADDNODE id - Add device | NODES rm id\n"
-                "DELETE n - Delete mail | DESTRUCT"
+                "PEERS - BBS network\n"
+                "ADDNODE id - Add device\n"
+                "RMVNODE id - Remove device\n"
+                "DESTRUCT - Delete account"
             ),
         ]
 
@@ -469,45 +470,36 @@ class CommandDispatcher:
 
         return f"Node {node_id} added. You can now login from that device."
 
-    def cmd_rmnode(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """Remove a node from user's account."""
+    def cmd_rmvnode(self, sender: str, args: str, session: dict, channel: int) -> str:
+        """Remove a node from user's account: RMVNODE <node_id>"""
         if not args:
-            return "Usage: RMNODE <node_id>"
+            return "Usage: RMVNODE <node_id>"
+
+        node_to_remove = args.strip()
 
         from ..db.users import UserNodeRepository
         user_node_repo = UserNodeRepository(self.bbs.db)
 
-        if user_node_repo.remove_node(session["user_id"], args):
-            return f"Node {args} removed from your account."
+        # Get current nodes
+        nodes = user_node_repo.get_user_nodes(session["user_id"])
+
+        # Don't allow removing last node
+        if len(nodes) <= 1:
+            return "Cannot remove your only node. Add another first."
+
+        # Don't allow removing current node (would lock self out)
+        if node_to_remove == sender:
+            return "Cannot remove the node you're currently using."
+
+        if user_node_repo.remove_node(session["user_id"], node_to_remove):
+            return f"Node {node_to_remove} removed."
         return "Node not found or not associated with your account."
 
     def cmd_nodes(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """List or remove user's associated nodes."""
+        """List user's associated nodes."""
         from ..db.users import UserNodeRepository
         user_node_repo = UserNodeRepository(self.bbs.db)
 
-        # Check for removal command: NODES rm <node_id>
-        if args.lower().startswith("rm "):
-            node_to_remove = args[3:].strip()
-            if not node_to_remove:
-                return "Usage: NODES rm <node_id>"
-
-            # Get current nodes
-            nodes = user_node_repo.get_user_nodes(session["user_id"])
-
-            # Don't allow removing last node
-            if len(nodes) <= 1:
-                return "Cannot remove your only node. Add another first."
-
-            # Don't allow removing current node (would lock self out)
-            if node_to_remove == sender:
-                return "Cannot remove the node you're currently using."
-
-            if user_node_repo.remove_node(session["user_id"], node_to_remove):
-                return f"Node {node_to_remove} removed."
-            return "Node not found or not associated with your account."
-
-        # List nodes
         nodes = user_node_repo.get_user_nodes(session["user_id"])
         if not nodes:
             return "No nodes associated with your account."
