@@ -21,7 +21,7 @@ Lightweight BBS for Meshtastic Mesh Networks
 
 ```bash
 # Clone repository
-git clone https://forge.echo6.co/matt/fq51bbs.git
+git clone https://github.com/zvx-echo6/fq51bbs
 cd fq51bbs
 
 # Start BBS
