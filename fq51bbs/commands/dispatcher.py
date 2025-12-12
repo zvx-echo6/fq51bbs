@@ -54,8 +54,8 @@ class CommandDispatcher:
         self.register("PASSWD", self.cmd_passwd, "authenticated", "Change password: PASSWD <old> <new>")
 
         # Node management
-        self.register("ADDNODE", self.cmd_addnode, "authenticated", "Add current node")
-        self.register("RMNODE", self.cmd_rmnode, "authenticated", "Remove node")
+        self.register("ADDNODE", self.cmd_addnode, "authenticated", "Add node: ADDNODE <node_id>")
+        self.register("RMNODE", self.cmd_rmnode, "authenticated", "Remove node: RMNODE <node_id>")
         self.register("NODES", self.cmd_nodes, "authenticated", "List your nodes")
 
         # Mail commands
@@ -236,7 +236,7 @@ class CommandDispatcher:
             (
                 f"[{callsign}] Other 4/4\n"
                 "PEERS - Show BBS network\n"
-                "NODES - Your devices | NODES rm id\n"
+                "ADDNODE id - Add device | NODES rm id\n"
                 "DELETE n - Delete mail | DESTRUCT"
             ),
         ]
@@ -444,16 +444,30 @@ class CommandDispatcher:
         return "Password changed successfully."
 
     def cmd_addnode(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """Add current node to user's account."""
+        """Add a node to user's account: ADDNODE <node_id>"""
+        if not args:
+            return "Usage: ADDNODE <node_id> (e.g., ADDNODE !abcd1234)"
+
+        node_id = args.strip()
+
+        # Validate node ID format (should start with !)
+        if not node_id.startswith("!"):
+            return "Invalid node ID. Should start with ! (e.g., !abcd1234)"
+
         from ..db.users import NodeRepository, UserNodeRepository
 
         node_repo = NodeRepository(self.bbs.db)
         user_node_repo = UserNodeRepository(self.bbs.db)
 
-        node = node_repo.get_or_create_node(sender)
+        # Check if already associated
+        existing_nodes = user_node_repo.get_user_nodes(session["user_id"])
+        if node_id in existing_nodes:
+            return f"Node {node_id} is already associated with your account."
+
+        node = node_repo.get_or_create_node(node_id)
         user_node_repo.associate_node(session["user_id"], node.id)
 
-        return f"Node {sender} added to your account."
+        return f"Node {node_id} added. You can now login from that device."
 
     def cmd_rmnode(self, sender: str, args: str, session: dict, channel: int) -> str:
         """Remove a node from user's account."""
