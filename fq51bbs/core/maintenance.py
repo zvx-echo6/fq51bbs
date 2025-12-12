@@ -50,7 +50,6 @@ class MaintenanceManager:
         self._last_announcement = 0
         self._last_expiration = 0
         self._last_backup = 0
-        self._last_stats_log = 0
 
         # Load last backup time from database
         self._load_last_backup_time()
@@ -85,9 +84,6 @@ class MaintenanceManager:
 
         # Database backup (configurable interval)
         await self._check_backup(now)
-
-        # Stats logging (every 30 minutes)
-        await self._check_stats(now)
 
     async def _check_announcements(self, now: float):
         """Check and send periodic announcements."""
@@ -128,7 +124,7 @@ class MaintenanceManager:
             user_count = self._get_user_count()
             msg_count = self._get_message_count()
 
-            msg = f"[{callsign}] {name} online. {user_count} users, {msg_count} msgs. Send H for help."
+            msg = f"[{callsign}] {name} online. {user_count} users, {msg_count} msgs. Send ? for help."
 
         try:
             channel = self.config.meshtastic.public_channel
@@ -429,31 +425,6 @@ class MaintenanceManager:
         # Sort by timestamp, newest first
         result.sort(key=lambda x: x["timestamp"], reverse=True)
         return result
-
-    async def _check_stats(self, now: float):
-        """Log statistics periodically."""
-        # Every 30 minutes
-        if now - self._last_stats_log < 1800:
-            return
-
-        self._last_stats_log = now
-
-        await self._log_stats()
-
-    async def _log_stats(self):
-        """Log current BBS statistics."""
-        if not self.bbs.db:
-            return
-
-        try:
-            stats = self.get_stats()
-            logger.info(
-                f"Stats: users={stats['users']}, msgs={stats['messages']}, "
-                f"mail={stats['mail']}, bulletins={stats['bulletins']}, "
-                f"uptime={stats['uptime_hours']:.1f}h"
-            )
-        except Exception as e:
-            logger.debug(f"Stats logging error: {e}")
 
     def get_stats(self) -> dict:
         """

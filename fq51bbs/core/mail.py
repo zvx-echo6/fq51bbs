@@ -154,26 +154,13 @@ class MailService:
             sender = user_repo.get_user_by_id(message.sender_user_id) if message.sender_user_id else None
             sender_name = sender.username if sender else "anonymous"
 
-            notification = f"[MAIL] From: {sender_name}. Send CM to check."
+            notification = f"[MAIL] From: {sender_name}. Send MAIL to check."
 
-            # Send via mesh
+            # Send via mesh (fire-and-forget, no ACK wait)
             if self.bbs.mesh:
-                await self.bbs.mesh.send_dm(node_id, notification)
-
-                # Wait for ACK (with timeout)
-                ack_event = asyncio.Event()
-                ack_key = f"mail_ack_{message.uuid}_{node_id}"
-                self._pending_acks[ack_key] = ack_event
-
-                try:
-                    await asyncio.wait_for(ack_event.wait(), timeout=ACK_TIMEOUT_SECS)
-                    return DeliveryResult(success=True, acked=True)
-                except asyncio.TimeoutError:
-                    # No ACK received, but message was sent
-                    # Consider it "sent" but not confirmed
-                    return DeliveryResult(success=False, error="ACK timeout")
-                finally:
-                    self._pending_acks.pop(ack_key, None)
+                await self.bbs.mesh.send_dm(notification, node_id)
+                # Mark as delivered immediately - user will see it when they check mail
+                return DeliveryResult(success=True, acked=False)
             else:
                 # No mesh connection, queue for later
                 return DeliveryResult(success=False, error="No mesh connection")
@@ -296,7 +283,8 @@ class MailService:
             return message, ""
 
         except Exception as e:
-            logger.error(f"Mail compose error: {e}")
+            import traceback
+            logger.error(f"Mail compose error: {e}\n{traceback.format_exc()}")
             return None, "Failed to compose mail."
 
     def read_mail(

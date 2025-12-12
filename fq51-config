@@ -82,6 +82,7 @@ admin_password = "changeme"
 motd = "Welcome to FQ51BBS!"
 max_message_age_days = 30
 announcement_interval_hours = 12
+announcements_enabled = true
 
 [database]
 path = "/data/fq51bbs.db"
@@ -93,8 +94,9 @@ connection_type = "serial"
 serial_port = "/dev/ttyUSB0"
 tcp_host = "localhost"
 tcp_port = 4403
-channel_index = 0
 public_channel = 0
+respond_channel = -1
+dm_only = true
 
 [crypto]
 argon2_time_cost = 3
@@ -235,16 +237,19 @@ bbs_settings() {
         local motd=$(get_config "motd")
         local max_age=$(get_config "max_message_age_days")
         local announce=$(get_config "announcement_interval_hours")
+        local announce_enabled=$(get_config "announcements_enabled")
+        [[ "$announce_enabled" != "false" ]] && announce_enabled="true"
 
         local choice
         choice=$(dialog --backtitle "$BACKTITLE" --title "BBS Settings" \
-            --menu "Configure BBS settings:" 16 60 7 \
+            --menu "Configure BBS settings:" 18 60 8 \
             "1" "BBS Name: $name" \
             "2" "Callsign: $callsign" \
             "3" "Admin Password: ********" \
             "4" "MOTD: ${motd:0:30}..." \
             "5" "Message Expiration: $max_age days" \
-            "6" "Announcement Interval: $announce hours" \
+            "6" "Announcements Enabled: $announce_enabled" \
+            "7" "Announcement Interval: $announce hours" \
             "B" "Back to Main Menu" \
             3>&1 1>&2 2>&3)
         [ $? -ne 0 ] && return
@@ -285,8 +290,15 @@ bbs_settings() {
                 [ -n "$new_age" ] && set_config "max_message_age_days" "$new_age" "bbs"
                 ;;
             6)
+                if yesno "Announcements" "Enable periodic BBS announcements?"; then
+                    set_config "announcements_enabled" "true" "bbs"
+                else
+                    set_config "announcements_enabled" "false" "bbs"
+                fi
+                ;;
+            7)
                 local new_ann
-                new_ann=$(input_box "Announcements" "Hours between announcements (0=disable):" "$announce")
+                new_ann=$(input_box "Announcements" "Hours between announcements:" "$announce")
                 [ -n "$new_ann" ] && set_config "announcement_interval_hours" "$new_ann" "bbs"
                 ;;
             B|b) return ;;
@@ -301,16 +313,29 @@ meshtastic_settings() {
         local serial_port=$(get_config "serial_port")
         local tcp_host=$(get_config "tcp_host")
         local tcp_port=$(get_config "tcp_port")
-        local channel=$(get_config "channel_index")
+        local public_channel=$(get_config "public_channel")
+        local dm_only=$(get_config "dm_only")
+        local respond_channel=$(get_config "respond_channel")
+        local ignore_channels=$(get_config "ignore_channels")
+
+        # Format dm_only for display
+        [[ "$dm_only" != "false" ]] && dm_only="true"
+
+        # Format respond_channel for display
+        local respond_display="$respond_channel"
+        [[ "$respond_channel" == "-1" ]] && respond_display="DM only"
 
         local choice
         choice=$(dialog --backtitle "$BACKTITLE" --title "Meshtastic Settings" \
-            --menu "Configure Meshtastic connection:" 14 60 5 \
+            --menu "Configure Meshtastic connection:" 18 60 10 \
             "1" "Connection Type: $conn_type" \
             "2" "Serial Port: $serial_port" \
             "3" "TCP Host: $tcp_host" \
             "4" "TCP Port: $tcp_port" \
-            "5" "Channel Index: $channel" \
+            "5" "Public Channel: $public_channel" \
+            "6" "DM Only Mode: $dm_only" \
+            "7" "Respond Channel: $respond_display" \
+            "8" "Ignore Channels: ${ignore_channels:-none}" \
             "B" "Back to Main Menu" \
             3>&1 1>&2 2>&3)
         [ $? -ne 0 ] && return
@@ -342,8 +367,34 @@ meshtastic_settings() {
                 ;;
             5)
                 local new_chan
-                new_chan=$(input_box "Channel" "Enter channel index:" "$channel")
-                [ -n "$new_chan" ] && set_config "channel_index" "$new_chan" "meshtastic"
+                new_chan=$(input_box "Public Channel" "Channel for announcements (0=LongFast):" "$public_channel")
+                [ -n "$new_chan" ] && set_config "public_channel" "$new_chan" "meshtastic"
+                ;;
+            6)
+                if yesno "DM Only Mode" "Only respond to direct messages?\n\nIf enabled, channel broadcasts are ignored."; then
+                    set_config "dm_only" "true" "meshtastic"
+                else
+                    set_config "dm_only" "false" "meshtastic"
+                fi
+                ;;
+            7)
+                local new_respond
+                new_respond=$(input_box "Respond Channel" "Channel to respond on (-1 = DM only, 0+ = specific channel):" "$respond_channel")
+                [ -n "$new_respond" ] && set_config "respond_channel" "$new_respond" "meshtastic"
+                ;;
+            8)
+                local new_ignore
+                new_ignore=$(input_box "Ignore Channels" "Channels to ignore (comma-separated, e.g. 1,2,3):" "$ignore_channels")
+                if [ -n "$new_ignore" ]; then
+                    # Format as TOML array
+                    local toml_array="[$(echo "$new_ignore" | sed 's/,/, /g')]"
+                    # Direct write since set_config doesn't handle arrays well
+                    if grep -q "^ignore_channels\s*=" "$CONFIG_FILE" 2>/dev/null; then
+                        sed -i "s|^ignore_channels\s*=.*|ignore_channels = $toml_array|" "$CONFIG_FILE"
+                    else
+                        sed -i "/^\[meshtastic\]/a ignore_channels = $toml_array" "$CONFIG_FILE"
+                    fi
+                fi
                 ;;
             B|b) return ;;
         esac
@@ -406,12 +457,16 @@ sync_settings() {
         local interval=$(get_config "auto_sync_interval_minutes")
         local mail_mode=$(get_config "mail_delivery_mode")
 
+        # Count peers
+        local peer_count=$(grep -c "^\[\[sync.peers\]\]" "$CONFIG_FILE" 2>/dev/null || echo "0")
+
         local choice
         choice=$(dialog --backtitle "$BACKTITLE" --title "Sync Settings" \
-            --menu "Configure inter-BBS sync:" 12 55 4 \
+            --menu "Configure inter-BBS sync:" 14 55 6 \
             "1" "Sync Enabled: $enabled" \
             "2" "Sync Interval: $interval minutes" \
             "3" "Mail Delivery: ${mail_mode:-instant}" \
+            "4" "Manage Peers ($peer_count configured)" \
             "B" "Back to Main Menu" \
             3>&1 1>&2 2>&3)
         [ $? -ne 0 ] && return
@@ -438,9 +493,1076 @@ sync_settings() {
                     3>&1 1>&2 2>&3)
                 [ -n "$new_mode" ] && set_config "mail_delivery_mode" "$new_mode" "sync"
                 ;;
+            4)
+                peer_settings
+                ;;
             B|b) return ;;
         esac
     done
+}
+
+# ============== PEER SETTINGS ==============
+peer_settings() {
+    while true; do
+        # Build peer list for menu
+        local peers=()
+        local i=1
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^\[\[sync.peers\]\] ]]; then
+                # Read the next few lines for this peer
+                local node_id="" name="" protocol=""
+                while IFS= read -r pline; do
+                    [[ "$pline" =~ ^node_id ]] && node_id=$(echo "$pline" | sed 's/.*=\s*"//; s/"$//')
+                    [[ "$pline" =~ ^name ]] && name=$(echo "$pline" | sed 's/.*=\s*"//; s/"$//')
+                    [[ "$pline" =~ ^protocol ]] && protocol=$(echo "$pline" | sed 's/.*=\s*"//; s/"$//')
+                    [[ "$pline" =~ ^\[ ]] && break
+                    [[ -z "$pline" ]] && break
+                done
+                if [ -n "$node_id" ]; then
+                    peers+=("$i" "$name ($node_id) [$protocol]")
+                    ((i++))
+                fi
+            fi
+        done < "$CONFIG_FILE"
+
+        # Add option to add new peer
+        peers+=("A" "Add New Peer")
+        peers+=("B" "Back")
+
+        local choice
+        if [ ${#peers[@]} -eq 4 ]; then
+            # Only Add and Back options
+            choice=$(dialog --backtitle "$BACKTITLE" --title "Sync Peers" \
+                --menu "No peers configured.\nPeers are other BBS nodes to sync with via DM." 12 55 2 \
+                "${peers[@]}" \
+                3>&1 1>&2 2>&3)
+        else
+            choice=$(dialog --backtitle "$BACKTITLE" --title "Sync Peers" \
+                --menu "Select peer to edit/delete, or add new:" 16 60 8 \
+                "${peers[@]}" \
+                3>&1 1>&2 2>&3)
+        fi
+        [ $? -ne 0 ] && return
+
+        case $choice in
+            A)
+                add_peer
+                ;;
+            B|b)
+                return
+                ;;
+            *)
+                edit_peer "$choice"
+                ;;
+        esac
+    done
+}
+
+add_peer() {
+    local node_id name protocol use_channel channel
+
+    node_id=$(input_box "Add Peer" "Enter peer node ID (e.g., !a1b2c3d4):" "")
+    [ -z "$node_id" ] && return
+
+    name=$(input_box "Add Peer" "Enter friendly name for this peer:" "")
+    [ -z "$name" ] && return
+
+    protocol=$(dialog --backtitle "$BACKTITLE" --title "Peer Protocol" \
+        --menu "What BBS software does this peer run?" 12 50 3 \
+        "fq51" "FQ51BBS (native protocol)" \
+        "tc2" "TC2-BBS" \
+        "meshing-around" "Meshing-Around BBS" \
+        3>&1 1>&2 2>&3)
+    [ -z "$protocol" ] && return
+
+    # Protocol-specific settings
+    use_channel="false"
+    channel="2"
+
+    if [ "$protocol" = "meshing-around" ]; then
+        if yesno "BBSLink Channel" "Use meshing-around's BBSLink channel?\n\nSelect Yes to sync via channel broadcast.\nSelect No to sync via direct messages."; then
+            use_channel="true"
+            channel=$(input_box "BBSLink Channel" "Enter BBSLink channel number:" "2")
+            [ -z "$channel" ] && channel="2"
+        fi
+    elif [ "$protocol" = "tc2" ]; then
+        if yesno "Sync Channel" "Use TC2's channel-based sync?\n\nSelect Yes to sync via channel broadcast.\nSelect No to sync via direct messages."; then
+            use_channel="true"
+            channel=$(input_box "Sync Channel" "Enter sync channel number:" "2")
+            [ -z "$channel" ] && channel="2"
+        fi
+    fi
+
+    # Append peer to config file
+    cat >> "$CONFIG_FILE" << EOF
+
+[[sync.peers]]
+node_id = "$node_id"
+name = "$name"
+protocol = "$protocol"
+use_channel = $use_channel
+channel = $channel
+EOF
+
+    if [ "$use_channel" = "true" ]; then
+        msg_box "Peer Added" "Peer '$name' ($node_id) added.\n\nSync will use channel $channel."
+    else
+        msg_box "Peer Added" "Peer '$name' ($node_id) added.\n\nSync will use direct messages."
+    fi
+}
+
+edit_peer() {
+    local peer_num="$1"
+
+    # Find and extract the peer info
+    local count=0
+    local start_line=0
+    local node_id="" name="" protocol="" use_channel="" channel=""
+
+    while IFS= read -r line_num; do
+        ((count++))
+        if [ "$count" -eq "$peer_num" ]; then
+            start_line=$line_num
+            break
+        fi
+    done < <(grep -n "^\[\[sync.peers\]\]" "$CONFIG_FILE" | cut -d: -f1)
+
+    if [ "$start_line" -eq 0 ]; then
+        msg_box "Error" "Peer not found"
+        return
+    fi
+
+    # Extract peer details
+    node_id=$(sed -n "$((start_line+1)),$((start_line+10))p" "$CONFIG_FILE" | grep "^node_id" | sed 's/.*=\s*"//; s/"$//')
+    name=$(sed -n "$((start_line+1)),$((start_line+10))p" "$CONFIG_FILE" | grep "^name" | sed 's/.*=\s*"//; s/"$//')
+    protocol=$(sed -n "$((start_line+1)),$((start_line+10))p" "$CONFIG_FILE" | grep "^protocol" | sed 's/.*=\s*"//; s/"$//')
+    use_channel=$(sed -n "$((start_line+1)),$((start_line+10))p" "$CONFIG_FILE" | grep "^use_channel" | sed 's/.*=\s*//')
+    channel=$(sed -n "$((start_line+1)),$((start_line+10))p" "$CONFIG_FILE" | grep "^channel" | sed 's/.*=\s*//')
+
+    # Defaults
+    [ -z "$use_channel" ] && use_channel="false"
+    [ -z "$channel" ] && channel="2"
+
+    # Format display
+    local sync_method="DM"
+    [ "$use_channel" = "true" ] && sync_method="Channel $channel"
+
+    local choice
+    choice=$(dialog --backtitle "$BACKTITLE" --title "Edit Peer: $name" \
+        --menu "Peer: $name\nNode: $node_id\nProtocol: $protocol\nSync via: $sync_method" 16 55 3 \
+        "1" "Edit Peer" \
+        "D" "Delete Peer" \
+        "B" "Back" \
+        3>&1 1>&2 2>&3)
+    [ $? -ne 0 ] && return
+
+    case $choice in
+        1)
+            # Edit peer
+            local new_node new_name new_protocol new_use_channel new_channel
+            new_node=$(input_box "Edit Peer" "Node ID:" "$node_id")
+            [ -z "$new_node" ] && return
+            new_name=$(input_box "Edit Peer" "Name:" "$name")
+            [ -z "$new_name" ] && return
+            new_protocol=$(dialog --backtitle "$BACKTITLE" --title "Peer Protocol" \
+                --default-item "$protocol" \
+                --menu "Protocol:" 12 50 3 \
+                "fq51" "FQ51BBS" \
+                "tc2" "TC2-BBS" \
+                "meshing-around" "Meshing-Around BBS" \
+                3>&1 1>&2 2>&3)
+            [ -z "$new_protocol" ] && return
+
+            # Protocol-specific settings
+            new_use_channel="false"
+            new_channel="$channel"
+
+            if [ "$new_protocol" = "meshing-around" ] || [ "$new_protocol" = "tc2" ]; then
+                local chan_prompt="Use channel-based sync?"
+                [ "$new_protocol" = "meshing-around" ] && chan_prompt="Use BBSLink channel?"
+
+                # Default to current setting
+                local yn_default=""
+                [ "$use_channel" = "true" ] && yn_default="--defaultno"
+
+                if yesno "Sync Method" "$chan_prompt\n\nYes = Channel broadcast\nNo = Direct messages"; then
+                    new_use_channel="true"
+                    new_channel=$(input_box "Sync Channel" "Channel number:" "$channel")
+                    [ -z "$new_channel" ] && new_channel="2"
+                fi
+            fi
+
+            # Delete old entry and add new
+            delete_peer_at_line "$start_line"
+            cat >> "$CONFIG_FILE" << EOF
+
+[[sync.peers]]
+node_id = "$new_node"
+name = "$new_name"
+protocol = "$new_protocol"
+use_channel = $new_use_channel
+channel = $new_channel
+EOF
+            msg_box "Updated" "Peer updated successfully."
+            ;;
+        D)
+            if yesno "Delete Peer" "Delete peer '$name'?"; then
+                delete_peer_at_line "$start_line"
+                msg_box "Deleted" "Peer '$name' deleted."
+            fi
+            ;;
+    esac
+}
+
+delete_peer_at_line() {
+    local start_line="$1"
+
+    # Find end of this peer block (next section or EOF)
+    local end_line
+    end_line=$(tail -n "+$((start_line+1))" "$CONFIG_FILE" | grep -n "^\[" | head -1 | cut -d: -f1)
+
+    if [ -n "$end_line" ]; then
+        end_line=$((start_line + end_line - 1))
+    else
+        end_line=$(wc -l < "$CONFIG_FILE")
+    fi
+
+    # Delete lines
+    sed -i "${start_line},${end_line}d" "$CONFIG_FILE"
+}
+
+# ============== USER MANAGEMENT ==============
+user_management() {
+    local db_path=$(get_config "path")
+    [ -z "$db_path" ] && db_path="/data/fq51bbs.db"
+
+    if [ ! -f "$db_path" ]; then
+        msg_box "Error" "Database not found at:\n$db_path\n\nStart the BBS first to create the database."
+        return
+    fi
+
+    while true; do
+        local choice
+        choice=$(dialog --backtitle "$BACKTITLE" --title "User Management" \
+            --menu "Manage BBS users:" 20 55 11 \
+            "1" "List Users" \
+            "2" "Create User" \
+            "3" "Delete User" \
+            "4" "Reset Password" \
+            "5" "Add Admin" \
+            "6" "Remove Admin" \
+            "7" "Ban User" \
+            "8" "Unban User" \
+            "9" "Manage User Nodes" \
+            "B" "Back to Main Menu" \
+            3>&1 1>&2 2>&3)
+        [ $? -ne 0 ] && return
+
+        case $choice in
+            1) list_users "$db_path" ;;
+            2) create_user "$db_path" ;;
+            3) delete_user "$db_path" ;;
+            4) reset_password "$db_path" ;;
+            5) add_admin "$db_path" ;;
+            6) remove_admin "$db_path" ;;
+            7) ban_user "$db_path" ;;
+            8) unban_user "$db_path" ;;
+            9) manage_user_nodes "$db_path" ;;
+            B|b) return ;;
+        esac
+    done
+}
+
+list_users() {
+    local db_path="$1"
+    local users
+    users=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('''
+    SELECT u.username, u.is_admin, u.is_banned,
+           (SELECT COUNT(*) FROM user_nodes WHERE user_id = u.id) as node_count
+    FROM users u ORDER BY u.username
+''')
+rows = cur.fetchall()
+if not rows:
+    print('No users registered.')
+else:
+    for r in rows:
+        flags = []
+        if r[1]: flags.append('ADMIN')
+        if r[2]: flags.append('BANNED')
+        flag_str = ' [' + ','.join(flags) + ']' if flags else ''
+        nodes = f' ({r[3]} nodes)' if r[3] else ''
+        print(f'{r[0]}{flag_str}{nodes}')
+" 2>/dev/null)
+
+    dialog --backtitle "$BACKTITLE" --title "Registered Users" \
+        --msgbox "$users" 18 50
+}
+
+add_admin() {
+    local db_path="$1"
+
+    # Get list of non-admin users
+    local users
+    users=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('SELECT username FROM users WHERE is_admin = 0 ORDER BY username')
+for r in cur.fetchall():
+    print(r[0])
+" 2>/dev/null)
+
+    if [ -z "$users" ]; then
+        msg_box "No Users" "No non-admin users found.\n\nUsers must register via the BBS first."
+        return
+    fi
+
+    # Build menu options
+    local menu_opts=()
+    while IFS= read -r user; do
+        menu_opts+=("$user" "")
+    done <<< "$users"
+
+    local username
+    username=$(dialog --backtitle "$BACKTITLE" --title "Add Admin" \
+        --menu "Select user to make admin:" 16 40 10 \
+        "${menu_opts[@]}" \
+        3>&1 1>&2 2>&3)
+    [ -z "$username" ] && return
+
+    if yesno "Confirm" "Make '$username' an admin?"; then
+        python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+conn.execute('UPDATE users SET is_admin = 1 WHERE username = ?', ('$username',))
+conn.commit()
+" 2>/dev/null
+        msg_box "Success" "User '$username' is now an admin."
+    fi
+}
+
+remove_admin() {
+    local db_path="$1"
+
+    # Get list of admin users
+    local users
+    users=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('SELECT username FROM users WHERE is_admin = 1 ORDER BY username')
+for r in cur.fetchall():
+    print(r[0])
+" 2>/dev/null)
+
+    if [ -z "$users" ]; then
+        msg_box "No Admins" "No admin users found."
+        return
+    fi
+
+    # Build menu options
+    local menu_opts=()
+    while IFS= read -r user; do
+        menu_opts+=("$user" "")
+    done <<< "$users"
+
+    local username
+    username=$(dialog --backtitle "$BACKTITLE" --title "Remove Admin" \
+        --menu "Select admin to demote:" 16 40 10 \
+        "${menu_opts[@]}" \
+        3>&1 1>&2 2>&3)
+    [ -z "$username" ] && return
+
+    if yesno "Confirm" "Remove admin rights from '$username'?"; then
+        python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+conn.execute('UPDATE users SET is_admin = 0 WHERE username = ?', ('$username',))
+conn.commit()
+" 2>/dev/null
+        msg_box "Success" "User '$username' is no longer an admin."
+    fi
+}
+
+delete_user() {
+    local db_path="$1"
+
+    # Get list of users
+    local users
+    users=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('SELECT username FROM users ORDER BY username')
+for r in cur.fetchall():
+    print(r[0])
+" 2>/dev/null)
+
+    if [ -z "$users" ]; then
+        msg_box "No Users" "No users found."
+        return
+    fi
+
+    # Build menu options
+    local menu_opts=()
+    while IFS= read -r user; do
+        menu_opts+=("$user" "")
+    done <<< "$users"
+
+    local username
+    username=$(dialog --backtitle "$BACKTITLE" --title "Delete User" \
+        --menu "Select user to DELETE:" 16 40 10 \
+        "${menu_opts[@]}" \
+        3>&1 1>&2 2>&3)
+    [ -z "$username" ] && return
+
+    if yesno "WARNING" "DELETE user '$username'?\n\nThis will remove:\n- User account\n- All their mail\n- All their posts\n\nThis cannot be undone!"; then
+        python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+# Get user ID
+cur.execute('SELECT id FROM users WHERE username = ?', ('$username',))
+row = cur.fetchone()
+if row:
+    user_id = row[0]
+    # Delete user's mail
+    cur.execute('DELETE FROM messages WHERE sender_user_id = ? OR recipient_user_id = ?', (user_id, user_id))
+    # Delete user's node associations
+    cur.execute('DELETE FROM user_nodes WHERE user_id = ?', (user_id,))
+    # Delete user
+    cur.execute('DELETE FROM users WHERE id = ?', (user_id,))
+    conn.commit()
+    print('deleted')
+" 2>/dev/null
+        msg_box "Deleted" "User '$username' has been deleted."
+    fi
+}
+
+create_user() {
+    local db_path="$1"
+
+    local username
+    username=$(input_box "Create User" "Enter username:" "")
+    [ -z "$username" ] && return
+
+    # Check if username exists
+    local exists
+    exists=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('SELECT 1 FROM users WHERE username = ?', ('$username',))
+print('yes' if cur.fetchone() else 'no')
+" 2>/dev/null)
+
+    if [ "$exists" = "yes" ]; then
+        msg_box "Error" "Username '$username' already exists."
+        return
+    fi
+
+    local password
+    password=$(password_box "Create User" "Enter password for $username:")
+    [ -z "$password" ] && return
+
+    local confirm
+    confirm=$(password_box "Confirm Password" "Confirm password:")
+    if [ "$password" != "$confirm" ]; then
+        msg_box "Error" "Passwords do not match."
+        return
+    fi
+
+    # Create user with proper password hashing
+    python3 -c "
+import sqlite3
+import time
+import hashlib
+import os
+import base64
+
+# Simple password hash (same as BBS uses for initial setup)
+# In production, BBS re-hashes with Argon2 on first login
+salt = os.urandom(16)
+hash_input = salt + '$password'.encode()
+pw_hash = hashlib.pbkdf2_hmac('sha256', hash_input, salt, 100000)
+stored = base64.b64encode(salt + pw_hash).decode()
+
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+now_us = int(time.time() * 1_000_000)
+
+# Generate a placeholder encryption key (will be regenerated on first login)
+enc_key = base64.b64encode(os.urandom(32)).decode()
+
+cur.execute('''
+    INSERT INTO users (username, password_hash, encryption_key, created_at_us, updated_at_us)
+    VALUES (?, ?, ?, ?, ?)
+''', ('$username', stored, enc_key, now_us, now_us))
+conn.commit()
+print('created')
+" 2>/dev/null
+
+    msg_box "Success" "User '$username' created.\n\nThey can now login via the BBS."
+}
+
+reset_password() {
+    local db_path="$1"
+
+    # Get list of users
+    local users
+    users=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('SELECT username FROM users ORDER BY username')
+for r in cur.fetchall():
+    print(r[0])
+" 2>/dev/null)
+
+    if [ -z "$users" ]; then
+        msg_box "No Users" "No users found."
+        return
+    fi
+
+    local menu_opts=()
+    while IFS= read -r user; do
+        menu_opts+=("$user" "")
+    done <<< "$users"
+
+    local username
+    username=$(dialog --backtitle "$BACKTITLE" --title "Reset Password" \
+        --menu "Select user:" 16 40 10 \
+        "${menu_opts[@]}" \
+        3>&1 1>&2 2>&3)
+    [ -z "$username" ] && return
+
+    local password
+    password=$(password_box "Reset Password" "Enter new password for $username:")
+    [ -z "$password" ] && return
+
+    local confirm
+    confirm=$(password_box "Confirm Password" "Confirm password:")
+    if [ "$password" != "$confirm" ]; then
+        msg_box "Error" "Passwords do not match."
+        return
+    fi
+
+    python3 -c "
+import sqlite3
+import time
+import hashlib
+import os
+import base64
+
+salt = os.urandom(16)
+hash_input = salt + '$password'.encode()
+pw_hash = hashlib.pbkdf2_hmac('sha256', hash_input, salt, 100000)
+stored = base64.b64encode(salt + pw_hash).decode()
+
+conn = sqlite3.connect('$db_path')
+now_us = int(time.time() * 1_000_000)
+conn.execute('UPDATE users SET password_hash = ?, updated_at_us = ? WHERE username = ?',
+             (stored, now_us, '$username'))
+conn.commit()
+" 2>/dev/null
+
+    msg_box "Success" "Password reset for '$username'."
+}
+
+ban_user() {
+    local db_path="$1"
+
+    # Get list of non-banned users
+    local users
+    users=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('SELECT username FROM users WHERE is_banned = 0 ORDER BY username')
+for r in cur.fetchall():
+    print(r[0])
+" 2>/dev/null)
+
+    if [ -z "$users" ]; then
+        msg_box "No Users" "No users available to ban."
+        return
+    fi
+
+    local menu_opts=()
+    while IFS= read -r user; do
+        menu_opts+=("$user" "")
+    done <<< "$users"
+
+    local username
+    username=$(dialog --backtitle "$BACKTITLE" --title "Ban User" \
+        --menu "Select user to BAN:" 16 40 10 \
+        "${menu_opts[@]}" \
+        3>&1 1>&2 2>&3)
+    [ -z "$username" ] && return
+
+    local reason
+    reason=$(input_box "Ban Reason" "Enter ban reason (optional):" "")
+
+    if yesno "Confirm" "Ban user '$username'?\n\nThey will not be able to login."; then
+        python3 -c "
+import sqlite3
+import time
+conn = sqlite3.connect('$db_path')
+now_us = int(time.time() * 1_000_000)
+conn.execute('UPDATE users SET is_banned = 1, ban_reason = ?, updated_at_us = ? WHERE username = ?',
+             ('$reason' if '$reason' else None, now_us, '$username'))
+conn.commit()
+" 2>/dev/null
+        msg_box "Banned" "User '$username' has been banned."
+    fi
+}
+
+unban_user() {
+    local db_path="$1"
+
+    # Get list of banned users
+    local users
+    users=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('SELECT username, ban_reason FROM users WHERE is_banned = 1 ORDER BY username')
+for r in cur.fetchall():
+    reason = f' - {r[1]}' if r[1] else ''
+    print(f'{r[0]}{reason}')
+" 2>/dev/null)
+
+    if [ -z "$users" ]; then
+        msg_box "No Banned Users" "No banned users found."
+        return
+    fi
+
+    local menu_opts=()
+    while IFS= read -r user; do
+        local uname="${user%% -*}"
+        menu_opts+=("$uname" "$user")
+    done <<< "$users"
+
+    local username
+    username=$(dialog --backtitle "$BACKTITLE" --title "Unban User" \
+        --menu "Select user to UNBAN:" 16 50 10 \
+        "${menu_opts[@]}" \
+        3>&1 1>&2 2>&3)
+    [ -z "$username" ] && return
+
+    if yesno "Confirm" "Unban user '$username'?"; then
+        python3 -c "
+import sqlite3
+import time
+conn = sqlite3.connect('$db_path')
+now_us = int(time.time() * 1_000_000)
+conn.execute('UPDATE users SET is_banned = 0, ban_reason = NULL, updated_at_us = ? WHERE username = ?',
+             (now_us, '$username'))
+conn.commit()
+" 2>/dev/null
+        msg_box "Unbanned" "User '$username' has been unbanned."
+    fi
+}
+
+manage_user_nodes() {
+    local db_path="$1"
+
+    # Get list of users
+    local users
+    users=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('SELECT username FROM users ORDER BY username')
+for r in cur.fetchall():
+    print(r[0])
+" 2>/dev/null)
+
+    if [ -z "$users" ]; then
+        msg_box "No Users" "No users found."
+        return
+    fi
+
+    local menu_opts=()
+    while IFS= read -r user; do
+        menu_opts+=("$user" "")
+    done <<< "$users"
+
+    local username
+    username=$(dialog --backtitle "$BACKTITLE" --title "Manage User Nodes" \
+        --menu "Select user:" 16 40 10 \
+        "${menu_opts[@]}" \
+        3>&1 1>&2 2>&3)
+    [ -z "$username" ] && return
+
+    while true; do
+        # Get user's current nodes
+        local nodes
+        nodes=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('''
+    SELECT n.node_id FROM user_nodes un
+    JOIN nodes n ON un.node_id = n.id
+    JOIN users u ON un.user_id = u.id
+    WHERE u.username = ?
+''', ('$username',))
+for r in cur.fetchall():
+    print(r[0])
+" 2>/dev/null)
+
+        local node_list="${nodes:-None}"
+
+        local choice
+        choice=$(dialog --backtitle "$BACKTITLE" --title "Nodes for $username" \
+            --menu "Current nodes:\n$node_list" 16 50 4 \
+            "1" "Add Node" \
+            "2" "Remove Node" \
+            "B" "Back" \
+            3>&1 1>&2 2>&3)
+        [ $? -ne 0 ] && return
+
+        case $choice in
+            1)
+                local node_id
+                node_id=$(input_box "Add Node" "Enter Meshtastic node ID\n(e.g., !a1b2c3d4):" "")
+                [ -z "$node_id" ] && continue
+
+                python3 -c "
+import sqlite3
+import time
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+now_us = int(time.time() * 1_000_000)
+
+# Get user ID
+cur.execute('SELECT id FROM users WHERE username = ?', ('$username',))
+user_row = cur.fetchone()
+if not user_row:
+    print('User not found')
+    exit(1)
+user_id = user_row[0]
+
+# Get or create node
+cur.execute('SELECT id FROM nodes WHERE node_id = ?', ('$node_id',))
+node_row = cur.fetchone()
+if node_row:
+    node_db_id = node_row[0]
+else:
+    cur.execute('INSERT INTO nodes (node_id, created_at_us) VALUES (?, ?)', ('$node_id', now_us))
+    node_db_id = cur.lastrowid
+
+# Check if already associated
+cur.execute('SELECT 1 FROM user_nodes WHERE user_id = ? AND node_id = ?', (user_id, node_db_id))
+if cur.fetchone():
+    print('already')
+else:
+    cur.execute('INSERT INTO user_nodes (user_id, node_id, created_at_us) VALUES (?, ?, ?)',
+                (user_id, node_db_id, now_us))
+    conn.commit()
+    print('added')
+" 2>/dev/null
+
+                msg_box "Node Added" "Node $node_id added to $username."
+                ;;
+            2)
+                if [ -z "$nodes" ]; then
+                    msg_box "No Nodes" "User has no nodes to remove."
+                    continue
+                fi
+
+                local node_menu=()
+                while IFS= read -r node; do
+                    node_menu+=("$node" "")
+                done <<< "$nodes"
+
+                local remove_node
+                remove_node=$(dialog --backtitle "$BACKTITLE" --title "Remove Node" \
+                    --menu "Select node to remove:" 14 45 8 \
+                    "${node_menu[@]}" \
+                    3>&1 1>&2 2>&3)
+                [ -z "$remove_node" ] && continue
+
+                python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+
+cur.execute('SELECT id FROM users WHERE username = ?', ('$username',))
+user_id = cur.fetchone()[0]
+
+cur.execute('SELECT id FROM nodes WHERE node_id = ?', ('$remove_node',))
+node_row = cur.fetchone()
+if node_row:
+    cur.execute('DELETE FROM user_nodes WHERE user_id = ? AND node_id = ?', (user_id, node_row[0]))
+    conn.commit()
+" 2>/dev/null
+
+                msg_box "Node Removed" "Node $remove_node removed from $username."
+                ;;
+            B|b) return ;;
+        esac
+    done
+}
+
+# ============== BOARD MANAGEMENT ==============
+board_management() {
+    local db_path=$(get_config "path")
+    [ -z "$db_path" ] && db_path="/data/fq51bbs.db"
+
+    if [ ! -f "$db_path" ]; then
+        msg_box "Error" "Database not found at:\n$db_path\n\nStart the BBS first to create the database."
+        return
+    fi
+
+    while true; do
+        local choice
+        choice=$(dialog --backtitle "$BACKTITLE" --title "Board Management" \
+            --menu "Manage bulletin boards:" 14 50 5 \
+            "1" "List Boards" \
+            "2" "Create Board" \
+            "3" "Edit Board" \
+            "4" "Delete Board" \
+            "B" "Back to Main Menu" \
+            3>&1 1>&2 2>&3)
+        [ $? -ne 0 ] && return
+
+        case $choice in
+            1) list_boards "$db_path" ;;
+            2) create_board "$db_path" ;;
+            3) edit_board "$db_path" ;;
+            4) delete_board "$db_path" ;;
+            B|b) return ;;
+        esac
+    done
+}
+
+list_boards() {
+    local db_path="$1"
+    local boards
+    boards=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('''
+    SELECT b.name, b.description, b.is_public,
+           (SELECT COUNT(*) FROM messages WHERE board_id = b.id AND deleted_at_us IS NULL) as post_count
+    FROM boards b ORDER BY b.name
+''')
+rows = cur.fetchall()
+if not rows:
+    print('No boards configured.')
+else:
+    for r in rows:
+        access = 'Public' if r[2] else 'Private'
+        desc = r[1][:25] + '...' if r[1] and len(r[1]) > 25 else (r[1] or '')
+        print(f'{r[0]} [{access}] ({r[3]} posts)')
+        if desc:
+            print(f'  {desc}')
+" 2>/dev/null)
+
+    dialog --backtitle "$BACKTITLE" --title "Bulletin Boards" \
+        --msgbox "$boards" 18 55
+}
+
+create_board() {
+    local db_path="$1"
+
+    local name
+    name=$(input_box "Create Board" "Enter board name (short, no spaces):" "")
+    [ -z "$name" ] && return
+
+    # Convert to lowercase, remove spaces
+    name=$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+
+    # Check if exists
+    local exists
+    exists=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('SELECT 1 FROM boards WHERE name = ?', ('$name',))
+print('yes' if cur.fetchone() else 'no')
+" 2>/dev/null)
+
+    if [ "$exists" = "yes" ]; then
+        msg_box "Error" "Board '$name' already exists."
+        return
+    fi
+
+    local description
+    description=$(input_box "Create Board" "Enter board description:" "")
+
+    local is_public="1"
+    if ! yesno "Board Access" "Make this board public?\n\nPublic boards are visible to all.\nPrivate boards are restricted."; then
+        is_public="0"
+    fi
+
+    python3 -c "
+import sqlite3
+import time
+conn = sqlite3.connect('$db_path')
+now_us = int(time.time() * 1_000_000)
+conn.execute('''
+    INSERT INTO boards (name, description, is_public, created_at_us)
+    VALUES (?, ?, ?, ?)
+''', ('$name', '$description' if '$description' else None, $is_public, now_us))
+conn.commit()
+" 2>/dev/null
+
+    msg_box "Success" "Board '$name' created."
+}
+
+edit_board() {
+    local db_path="$1"
+
+    # Get list of boards
+    local boards
+    boards=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('SELECT name FROM boards ORDER BY name')
+for r in cur.fetchall():
+    print(r[0])
+" 2>/dev/null)
+
+    if [ -z "$boards" ]; then
+        msg_box "No Boards" "No boards found."
+        return
+    fi
+
+    local menu_opts=()
+    while IFS= read -r board; do
+        menu_opts+=("$board" "")
+    done <<< "$boards"
+
+    local boardname
+    boardname=$(dialog --backtitle "$BACKTITLE" --title "Edit Board" \
+        --menu "Select board to edit:" 16 40 10 \
+        "${menu_opts[@]}" \
+        3>&1 1>&2 2>&3)
+    [ -z "$boardname" ] && return
+
+    # Get current values
+    local current
+    current=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('SELECT description, is_public FROM boards WHERE name = ?', ('$boardname',))
+r = cur.fetchone()
+if r:
+    print(f'{r[0] or \"\"}|||{r[1]}')
+" 2>/dev/null)
+
+    local old_desc="${current%|||*}"
+    local old_public="${current#*|||}"
+
+    local new_desc
+    new_desc=$(input_box "Edit Board" "Description for $boardname:" "$old_desc")
+
+    local new_public="1"
+    if [ "$old_public" = "1" ]; then
+        if ! yesno "Board Access" "Keep board public?"; then
+            new_public="0"
+        fi
+    else
+        if yesno "Board Access" "Make board public?"; then
+            new_public="1"
+        else
+            new_public="0"
+        fi
+    fi
+
+    python3 -c "
+import sqlite3
+import time
+conn = sqlite3.connect('$db_path')
+now_us = int(time.time() * 1_000_000)
+conn.execute('UPDATE boards SET description = ?, is_public = ?, updated_at_us = ? WHERE name = ?',
+             ('$new_desc' if '$new_desc' else None, $new_public, now_us, '$boardname'))
+conn.commit()
+" 2>/dev/null
+
+    msg_box "Updated" "Board '$boardname' updated."
+}
+
+delete_board() {
+    local db_path="$1"
+
+    # Get list of boards
+    local boards
+    boards=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('SELECT name FROM boards ORDER BY name')
+for r in cur.fetchall():
+    print(r[0])
+" 2>/dev/null)
+
+    if [ -z "$boards" ]; then
+        msg_box "No Boards" "No boards found."
+        return
+    fi
+
+    local menu_opts=()
+    while IFS= read -r board; do
+        menu_opts+=("$board" "")
+    done <<< "$boards"
+
+    local boardname
+    boardname=$(dialog --backtitle "$BACKTITLE" --title "Delete Board" \
+        --menu "Select board to DELETE:" 16 40 10 \
+        "${menu_opts[@]}" \
+        3>&1 1>&2 2>&3)
+    [ -z "$boardname" ] && return
+
+    # Get post count
+    local post_count
+    post_count=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+cur.execute('''
+    SELECT COUNT(*) FROM messages m
+    JOIN boards b ON m.board_id = b.id
+    WHERE b.name = ? AND m.deleted_at_us IS NULL
+''', ('$boardname',))
+print(cur.fetchone()[0])
+" 2>/dev/null)
+
+    if yesno "WARNING" "DELETE board '$boardname'?\n\nThis will also delete $post_count posts!\n\nThis cannot be undone!"; then
+        python3 -c "
+import sqlite3
+import time
+conn = sqlite3.connect('$db_path')
+cur = conn.cursor()
+now_us = int(time.time() * 1_000_000)
+
+# Get board ID
+cur.execute('SELECT id FROM boards WHERE name = ?', ('$boardname',))
+board_id = cur.fetchone()[0]
+
+# Soft-delete all posts in board
+cur.execute('UPDATE messages SET deleted_at_us = ? WHERE board_id = ?', (now_us, board_id))
+
+# Delete read positions
+cur.execute('DELETE FROM board_read_positions WHERE board_id = ?', (board_id,))
+
+# Delete board
+cur.execute('DELETE FROM boards WHERE id = ?', (board_id,))
+
+conn.commit()
+" 2>/dev/null
+        msg_box "Deleted" "Board '$boardname' and its posts have been deleted."
+    fi
 }
 
 # ============== VIEW CONFIG ==============
@@ -455,14 +1577,16 @@ main_menu() {
         local choice
         choice=$(dialog --backtitle "$BACKTITLE" --title "Main Menu" \
             --cancel-label "Exit" \
-            --menu "FQ51BBS Configuration" 16 50 8 \
+            --menu "FQ51BBS Configuration" 20 55 11 \
             "1" "Setup Wizard" \
             "2" "BBS Settings" \
             "3" "Meshtastic Connection" \
             "4" "Operating Mode" \
             "5" "Features" \
             "6" "Sync Settings" \
-            "7" "View Configuration" \
+            "7" "User Management" \
+            "8" "Board Management" \
+            "9" "View Configuration" \
             "X" "Exit" \
             3>&1 1>&2 2>&3)
 
@@ -475,7 +1599,9 @@ main_menu() {
             4) operating_mode_settings ;;
             5) features_settings ;;
             6) sync_settings ;;
-            7) view_config ;;
+            7) user_management ;;
+            8) board_management ;;
+            9) view_config ;;
             X|x) break ;;
         esac
     done

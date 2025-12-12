@@ -6,6 +6,7 @@ Routes incoming messages to appropriate command handlers.
 
 import logging
 import re
+import time
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -39,22 +40,18 @@ class CommandDispatcher:
 
     def _register_builtins(self):
         """Register built-in commands."""
-        # Help commands
-        self.register("H", self.cmd_help, "always", "Show help")
+        # Help
         self.register("?", self.cmd_help, "always", "Show help")
         self.register("HELP", self.cmd_help, "always", "Show help")
 
-        # Info commands
-        self.register("I", self.cmd_info, "always", "BBS information")
+        # Info
         self.register("INFO", self.cmd_info, "always", "BBS information")
-        self.register("W", self.cmd_who, "always", "Who's online")
-        self.register("WHO", self.cmd_who, "always", "Who's online")
 
-        # Authentication commands
-        self.register("REG", self.cmd_register, "always", "Register: REG <user> <pass>")
+        # Authentication
+        self.register("REGISTER", self.cmd_register, "always", "Register: REGISTER <user> <pass>")
         self.register("LOGIN", self.cmd_login, "always", "Login: LOGIN <user> <pass>")
         self.register("LOGOUT", self.cmd_logout, "authenticated", "Log out")
-        self.register("PASSWD", self.cmd_passwd, "authenticated", "Change password")
+        self.register("PASSWD", self.cmd_passwd, "authenticated", "Change password: PASSWD <old> <new>")
 
         # Node management
         self.register("ADDNODE", self.cmd_addnode, "authenticated", "Add current node")
@@ -62,22 +59,22 @@ class CommandDispatcher:
         self.register("NODES", self.cmd_nodes, "authenticated", "List your nodes")
 
         # Mail commands
-        self.register("SM", self.cmd_send_mail, "authenticated", "Send mail: SM <to> <msg>")
-        self.register("CM", self.cmd_check_mail, "authenticated", "Check mail count")
-        self.register("RM", self.cmd_read_mail, "authenticated", "Read mail: RM [n]")
-        self.register("DM", self.cmd_delete_mail, "authenticated", "Delete mail: DM <n>")
+        self.register("SEND", self.cmd_send_mail, "authenticated", "Send mail: SEND <to> <msg>")
+        self.register("MAIL", self.cmd_check_mail, "authenticated", "Check mail count")
+        self.register("READ", self.cmd_read_mail, "authenticated", "Read mail: READ [n]")
+        self.register("DELETE", self.cmd_delete_mail, "authenticated", "Delete mail: DELETE <n>")
 
         # Board commands
-        self.register("B", self.cmd_boards, "always", "List boards or enter: B [name]")
-        self.register("L", self.cmd_list, "always", "List posts: L [n]")
-        self.register("R", self.cmd_read, "always", "Read post: R <n>")
-        self.register("P", self.cmd_post, "authenticated", "Post: P <subj> <body>")
-        self.register("Q", self.cmd_quit_board, "always", "Quit board")
+        self.register("BOARD", self.cmd_boards, "always", "List/enter board: BOARD [name]")
+        self.register("LIST", self.cmd_list, "always", "List posts: LIST [count]")
+        self.register("POST", self.cmd_post, "authenticated", "Post: POST <subj> <body>")
+        self.register("QUIT", self.cmd_quit_board, "always", "Quit board")
 
         # Admin commands
         self.register("BAN", self.cmd_ban, "admin", "Ban user: BAN <user> [reason]")
         self.register("UNBAN", self.cmd_unban, "admin", "Unban user: UNBAN <user>")
-        self.register("SYNC", self.cmd_sync, "admin", "Force sync: SYNC [peer]")
+        self.register("MKBOARD", self.cmd_mkboard, "admin", "Create board: MKBOARD <name> [desc]")
+        self.register("RMBOARD", self.cmd_rmboard, "admin", "Delete board: RMBOARD <name>")
         self.register("ANNOUNCE", self.cmd_announce, "admin", "Broadcast: ANNOUNCE <msg>")
 
         # Self-destruct
@@ -120,7 +117,7 @@ class CommandDispatcher:
 
         # Look up command
         if cmd not in self._commands:
-            return "Unknown command. Send H for help."
+            return "Unknown cmd. Send ? for help."
 
         handler, access, _ = self._commands[cmd]
 
@@ -128,7 +125,7 @@ class CommandDispatcher:
         session = self._get_session(sender)
 
         if access == "authenticated" and not session.get("user_id"):
-            return "Please login first. REG <user> <pass> or LOGIN <user> <pass>"
+            return "Please login first. REGISTER <user> <pass> or LOGIN <user> <pass>"
 
         if access == "admin" and not session.get("is_admin"):
             return "Admin access required."
@@ -147,21 +144,39 @@ class CommandDispatcher:
             return "Error processing command."
 
     def _get_session(self, sender: str) -> dict:
-        """Get or create session for sender."""
+        """Get or create session for sender, checking for timeout."""
+        now = time.time()
+        timeout_secs = self.bbs.config.bbs.session_timeout_minutes * 60
+
         if sender not in self.bbs._sessions:
             self.bbs._sessions[sender] = {
                 "user_id": None,
                 "username": None,
                 "is_admin": False,
                 "current_board": None,
-                "last_activity": 0,
+                "last_activity": now,
             }
+        else:
+            session = self.bbs._sessions[sender]
+            # Check for session timeout
+            if session.get("user_id") and timeout_secs > 0:
+                if now - session.get("last_activity", 0) > timeout_secs:
+                    # Session expired - log out user
+                    logger.info(f"Session timeout for {session.get('username')}")
+                    session["user_id"] = None
+                    session["username"] = None
+                    session["is_admin"] = False
+                    session["current_board"] = None
+
+            # Update last activity
+            session["last_activity"] = now
+
         return self.bbs._sessions[sender]
 
     def _check_feature(self, cmd: str) -> bool:
         """Check if the feature for this command is enabled."""
-        mail_commands = {"SM", "CM", "RM", "DM"}
-        board_commands = {"B", "L", "R", "P", "Q"}
+        mail_commands = {"SEND", "MAIL", "READ", "DELETE"}
+        board_commands = {"BOARD", "LIST", "POST", "QUIT"}
 
         if cmd in mail_commands and not self.bbs.config.features.mail_enabled:
             return False
@@ -173,21 +188,48 @@ class CommandDispatcher:
 
     # === Command Handlers ===
 
-    def cmd_help(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """Show help information - compact for Meshtastic's 237 byte limit."""
-        # Compact help to fit in single message
-        return (
-            f"[{self.bbs.config.bbs.callsign}] Cmds:\n"
-            "R user pw-Register\n"
-            "L user pw-Login\n"
-            "SM user msg-Send mail\n"
-            "RM-Read mail\n"
-            "LB-List boards\n"
-            "RB board-Read board\n"
-            "PB board msg-Post\n"
-            "W-Who's on\n"
-            "I-Info O-Logout"
-        )
+    def cmd_help(self, sender: str, args: str, session: dict, channel: int):
+        """Show help information - sends all help in multiple messages (<150 chars each)."""
+        callsign = self.bbs.config.bbs.callsign
+
+        # Check for admin help
+        if args.strip().lower() == "admin":
+            if not session.get("is_admin"):
+                return "Admin access required."
+            return (
+                f"[{callsign}] Admin Commands\n"
+                "BAN user [reason] - Ban user\n"
+                "UNBAN user - Unban user\n"
+                "MKBOARD name [desc] - Create board\n"
+                "RMBOARD name - Delete board\n"
+                "ANNOUNCE msg - Broadcast"
+            )
+
+        # Build help messages - each under 150 chars
+        help_msgs = [
+            (
+                f"[{callsign}] Commands 1/3\n"
+                "REGISTER user pass - New account\n"
+                "LOGIN user pass - Login\n"
+                "LOGOUT - Logout | INFO - BBS info"
+            ),
+            (
+                f"[{callsign}] Mail 2/3\n"
+                "SEND user msg - Send mail\n"
+                "MAIL - Check inbox\n"
+                "READ - List mail | READ 3 - Read msg 3\n"
+                "DELETE 3 - Delete msg 3"
+            ),
+            (
+                f"[{callsign}] Boards 3/3\n"
+                "BOARD - List | BOARD general - Enter\n"
+                "LIST - Posts | READ 5 - Read post 5\n"
+                "POST title msg - New post | QUIT - Leave"
+            ),
+        ]
+
+        # Return all messages as a list
+        return help_msgs
 
     def cmd_info(self, sender: str, args: str, session: dict, channel: int) -> str:
         """Show BBS information."""
@@ -411,10 +453,10 @@ class CommandDispatcher:
     # === Mail Commands ===
 
     def cmd_send_mail(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """Send mail: SM <to> <message>"""
+        """Send mail: SEND <to> <message>"""
         parts = args.split(maxsplit=1)
         if len(parts) < 2:
-            return "Usage: SM <username> <message>"
+            return "Usage: SEND <username> <message>"
 
         recipient, body = parts
 
@@ -450,12 +492,12 @@ class CommandDispatcher:
                 lines.append(f"{marker}{msg['id']:3d}. {msg['date']} {msg['from'][:12]}")
 
         lines.append("")
-        lines.append("Use RM <n> to read, DM <n> to delete")
+        lines.append("Use READ <n> to read, DELETE <n> to delete")
 
         return "\n".join(lines)
 
     def cmd_read_mail(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """Read mail: RM <n> or RM to list"""
+        """Read mail: READ <n> or READ to list"""
         if not args:
             # List mail
             messages = self.bbs.mail_service.list_mail(session["user_id"], limit=10)
@@ -473,7 +515,7 @@ class CommandDispatcher:
         try:
             message_id = int(args)
         except ValueError:
-            return "Usage: RM <message_id>"
+            return "Usage: READ <message_id>"
 
         mail, error = self.bbs.mail_service.read_mail(session["user_id"], message_id)
         if error:
@@ -491,14 +533,14 @@ class CommandDispatcher:
         return "\n".join(lines)
 
     def cmd_delete_mail(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """Delete mail: DM <n>"""
+        """Delete mail: DELETE <n>"""
         if not args:
-            return "Usage: DM <message_id>"
+            return "Usage: DELETE <message_id>"
 
         try:
             message_id = int(args)
         except ValueError:
-            return "Usage: DM <message_id>"
+            return "Usage: DELETE <message_id>"
 
         success, error = self.bbs.mail_service.delete_mail(session["user_id"], message_id)
         if error:
@@ -670,10 +712,45 @@ class CommandDispatcher:
             return f"User {args} has been unbanned."
         return "User not found."
 
-    def cmd_sync(self, sender: str, args: str, session: dict, channel: int) -> str:
-        """Force sync (admin only)."""
-        # TODO: Implement
-        return "Sync not yet implemented."
+    def cmd_mkboard(self, sender: str, args: str, session: dict, channel: int) -> str:
+        """Create a new board (admin only)."""
+        parts = args.split(maxsplit=1)
+        if not parts:
+            return "Usage: MKBOARD <name> [description]"
+
+        name = parts[0].lower()
+        description = parts[1] if len(parts) > 1 else ""
+
+        # Validate name
+        if len(name) < 2 or len(name) > 16:
+            return "Board name must be 2-16 characters."
+
+        if not re.match(r'^[a-z0-9_]+$', name):
+            return "Board name: lowercase letters, numbers, underscore only."
+
+        board, error = self.bbs.board_service.create_board(
+            name=name,
+            description=description,
+            creator_id=session["user_id"]
+        )
+
+        if error:
+            return error
+
+        return f"Board '{name}' created."
+
+    def cmd_rmboard(self, sender: str, args: str, session: dict, channel: int) -> str:
+        """Delete a board (admin only)."""
+        if not args:
+            return "Usage: RMBOARD <name>"
+
+        name = args.strip().lower()
+
+        success, error = self.bbs.board_service.delete_board(name)
+        if error:
+            return error
+
+        return f"Board '{name}' deleted."
 
     def cmd_announce(self, sender: str, args: str, session: dict, channel: int) -> str:
         """Broadcast announcement (admin only)."""

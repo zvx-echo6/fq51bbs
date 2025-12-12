@@ -602,6 +602,25 @@ class BoardService:
             logger.error(f"Board creation error: {e}")
             return None, "Failed to create board."
 
+    def delete_board(self, name: str) -> tuple[bool, str]:
+        """
+        Delete a board by name (admin only).
+
+        Returns:
+            (True, "") on success
+            (False, error_message) on failure
+        """
+        board = self.board_repo.get_board_by_name(name)
+        if not board:
+            return False, f"Board '{name}' not found."
+
+        try:
+            self.board_repo.delete_board(board.id)
+            return True, ""
+        except Exception as e:
+            logger.error(f"Board deletion error: {e}")
+            return False, "Failed to delete board."
+
     def grant_access(
         self,
         board_id: int,

@@ -29,6 +29,7 @@ class BBSConfig:
     max_message_age_days: int = 30
     announcement_interval_hours: int = 12
     announcements_enabled: bool = True  # Enable/disable periodic announcements
+    session_timeout_minutes: int = 30  # Auto-logout after inactivity
 
 
 @dataclass
@@ -94,6 +95,9 @@ class SyncPeer:
     node_id: str
     name: str
     protocol: str  # tc2 | meshing-around | fq51
+    # Protocol-specific settings
+    use_channel: bool = False  # If True, use channel broadcast instead of DM
+    channel: int = 2  # Channel to use if use_channel=True (meshing-around bbslink default is 2)
 
 
 @dataclass

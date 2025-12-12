@@ -131,6 +131,8 @@ class MeshInterface:
 
     def _on_receive(self, packet, interface):
         """Internal handler for received text messages."""
+        logger.debug(f"Received packet: {packet}")
+
         if not packet:
             return
 
@@ -146,6 +148,8 @@ class MeshInterface:
             "rxRssi": packet.get("rxRssi"),
         }
 
+        logger.info(f"Message from {message_data['fromId']}: {message_data['text'][:50] if message_data['text'] else '(empty)'}")
+
         # Call all registered handlers
         for handler in self._message_handlers:
             try:
@@ -156,12 +160,77 @@ class MeshInterface:
     def _on_connection(self, interface, topic=pub.AUTO_TOPIC):
         """Handle connection established event."""
         self._connected = True
+        self._reconnect_attempts = 0
         logger.info("Meshtastic connection established")
 
     def _on_disconnect(self, interface, topic=pub.AUTO_TOPIC):
         """Handle disconnection event."""
         self._connected = False
         logger.warning("Meshtastic connection lost")
+        # Trigger reconnect in background
+        self._schedule_reconnect()
+
+    def _schedule_reconnect(self):
+        """Schedule a reconnection attempt."""
+        import threading
+        if hasattr(self, '_reconnecting') and self._reconnecting:
+            return
+        self._reconnecting = True
+        thread = threading.Thread(target=self._reconnect_loop, daemon=True)
+        thread.start()
+
+    def _reconnect_loop(self):
+        """Attempt to reconnect with exponential backoff."""
+        max_attempts = 10
+        base_delay = 5  # seconds
+
+        for attempt in range(max_attempts):
+            if self._connected:
+                self._reconnecting = False
+                return
+
+            delay = min(base_delay * (2 ** attempt), 300)  # Cap at 5 minutes
+            logger.info(f"Reconnect attempt {attempt + 1}/{max_attempts} in {delay}s...")
+            time.sleep(delay)
+
+            try:
+                self._do_reconnect()
+                if self._connected:
+                    logger.info("Reconnected to Meshtastic successfully")
+                    self._reconnecting = False
+                    return
+            except Exception as e:
+                logger.error(f"Reconnect failed: {e}")
+
+        logger.error("Max reconnect attempts reached. Manual restart required.")
+        self._reconnecting = False
+
+    def _do_reconnect(self):
+        """Perform the actual reconnection."""
+        # Close old interface if it exists
+        if self._interface:
+            try:
+                self._interface.close()
+            except Exception:
+                pass
+            self._interface = None
+
+        # Reconnect based on connection type
+        if self.config.connection_type == "serial":
+            self._interface = meshtastic.serial_interface.SerialInterface(
+                devPath=self.config.serial_port
+            )
+        elif self.config.connection_type == "tcp":
+            self._interface = meshtastic.tcp_interface.TCPInterface(
+                hostname=self.config.tcp_host,
+                portNumber=self.config.tcp_port
+            )
+
+        # Get our node info
+        my_info = self._interface.getMyNodeInfo()
+        if my_info:
+            self._node_id = my_info.get("user", {}).get("id")
+            self._connected = True
 
     async def send_text(
         self,
@@ -187,16 +256,17 @@ class MeshInterface:
             return False
 
         try:
+            logger.info(f"Sending to {destination} on channel {channel}: {text[:50]}...")
             self._interface.sendText(
                 text=text,
                 destinationId=destination,
                 channelIndex=channel,
                 wantAck=want_ack
             )
-            logger.debug(f"Sent to {destination}: {text[:50]}...")
+            logger.info(f"Sent successfully to {destination}")
             return True
         except Exception as e:
-            logger.error(f"Failed to send message: {e}")
+            logger.error(f"Failed to send message to {destination}: {e}")
             return False
 
     async def send_dm(self, text: str, destination: str, want_ack: bool = True) -> bool:
@@ -204,7 +274,7 @@ class MeshInterface:
         return await self.send_text(
             text,
             destination,
-            channel=self.config.channel_index,
+            channel=0,  # DMs use channel 0
             want_ack=want_ack
         )
 
