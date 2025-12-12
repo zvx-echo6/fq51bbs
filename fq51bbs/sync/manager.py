@@ -463,6 +463,19 @@ class SyncManager:
                 return node_id
         return None
 
+    def is_peer(self, node_id: str) -> bool:
+        """
+        Check if a node ID is a configured peer.
+
+        Args:
+            node_id: Node ID to check (e.g., !abcd1234)
+
+        Returns:
+            True if node is a configured and enabled peer
+        """
+        peer = self._peers.get(node_id)
+        return peer is not None and peer.enabled
+
     # === Remote Mail Protocol ===
 
     async def send_remote_mail(
@@ -555,8 +568,14 @@ class SyncManager:
         """
         Handle incoming mail protocol messages.
 
+        Only accepts messages from configured peers for security.
         Returns True if message was handled.
         """
+        # Security: Only accept BBS protocol messages from configured peers
+        if not self.is_peer(sender):
+            logger.warning(f"Rejected BBS protocol message from non-peer: {sender}")
+            return False
+
         if message.startswith("MAILREQ|"):
             return self._handle_mailreq(message, sender)
         elif message.startswith("MAILACK|"):

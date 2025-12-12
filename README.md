@@ -1,5 +1,7 @@
 # FQ51BBS
 
+> **Note**: This is a vibe-coded project built with AI assistance (Claude). While functional, it may contain bugs, unconventional patterns, or rough edges. Contributions and feedback welcome!
+
 Lightweight BBS for Meshtastic Mesh Networks
 
 ## Features
@@ -155,6 +157,8 @@ Key settings:
 
 ### Peer Configuration (Federation)
 
+Federation traffic is **whitelisted by peer** - only nodes configured as peers can send/receive BBS protocol messages. This prevents unauthorized nodes from injecting messages or abusing the relay system.
+
 ```toml
 [[sync.peers]]
 name = "REMOTE1"
@@ -166,6 +170,19 @@ name = "REMOTE2"
 node_id = "!efgh5678"
 enabled = true
 ```
+
+To federate with another BBS:
+1. Exchange node IDs with the other BBS operator
+2. Both sides add each other as peers in their config
+3. Set `enabled = true` to activate the peering
+
+## Security
+
+- **Encryption at rest**: All messages encrypted with user-derived keys (Argon2id + ChaCha20-Poly1305)
+- **Node-based 2FA**: Login requires both password AND a pre-registered Meshtastic node
+- **Peer whitelisting**: BBS protocol messages only accepted from configured peers
+- **Loop prevention**: Remote mail includes route tracking to prevent infinite relay loops
+- **Hop limiting**: Maximum 5 hops for relayed messages
 
 ## Architecture
 
